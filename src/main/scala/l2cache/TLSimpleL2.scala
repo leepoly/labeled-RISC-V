@@ -106,9 +106,9 @@ with HasControlPlaneParameters
       val timer = GTimer()
       val log_prefix = "cycle: %d [L2Cache] state %x "
       def log_raw(prefix: String, fmt: String, tail: String, args: Bits*) = {
-        if (param.debug) {
+        //if (param.debug) {
           printf(prefix + fmt + tail, args:_*)
-        }
+        //}
       }
 
       /** Single log */
@@ -128,10 +128,28 @@ with HasControlPlaneParameters
           in.a.bits.address,
           in.a.bits.mask,
           in.a.bits.data)
+        println("in.a opcode %x, dsid %x, param %x, size %x, source %x, address %x, mask %x, data %x",
+          in.a.bits.opcode,
+          in.a.bits.dsid,
+          in.a.bits.param,
+          in.a.bits.size,
+          in.a.bits.source,
+          in.a.bits.address,
+          in.a.bits.mask,
+          in.a.bits.data)
       }
 
       when (out.a.fire()) {
         log("out.a.opcode %x, dsid %x, param %x, size %x, source %x, address %x, mask %x, data %x",
+          out.a.bits.opcode,
+          out.a.bits.dsid,
+          out.a.bits.param,
+          out.a.bits.size,
+          out.a.bits.source,
+          out.a.bits.address,
+          out.a.bits.mask,
+          out.a.bits.data)
+        println("out.a.opcode %x, dsid %x, param %x, size %x, source %x, address %x, mask %x, data %x",
           out.a.bits.opcode,
           out.a.bits.dsid,
           out.a.bits.param,

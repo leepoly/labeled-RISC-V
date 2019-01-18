@@ -33,7 +33,7 @@ $(nohype_dtb): $(build_dir)/generated-src/freechips.rocketchip.system.$(CONFIG).
 	rm emu.dtb
 
 $(nohype_dtb_hex_file): $(nohype_dtb)
-	./gen_dtb_bin.sh $(build_dir)
+	bash ./gen_dtb_bin.sh $(build_dir)
 
 $(emu_bin_hex_file): $(emu_bin_file)
 	mkdir -p $(@D)
