@@ -11,20 +11,29 @@ vluint64_t main_time = 0;       // Current simulation time
 int state = 0;
 #define TEST_END 70000
 #define TLMESSAGE_GET 0x4
+#define TLMESSAGE_PUTFULLDATA 0x0
 #define MEM_SIZE 0x1000
 int readCntFromMemToCache = -1;
 int readCntFromCacheToCPU = -1;
+int writeCntFromCPUToCache = -1;
 u64 mem[MEM_SIZE][8];
 u64 cache_reply_buf[8];
 int test_case;
 u64 to_mem_paddr; 
 u64 to_mem_vaddr;
-//0 <--> nop; 1 <--> request read addr; 2 <--> cache reply 1; 3 <--> cache reply data; 6 <--> cpu reply 3
-//4 <--> cache request read data from mem(8 beats total); 5 <--> mem reply 4 to cache;
+//0 <--> nop; 1 <--> request read/write addr; 2 <--> cache reply 1; 6 <--> cpu reply data
+//4 <--> cache request read data from mem(8 beats total);
+//5 <--> transmit consistent wdata (8 beats total)
+//read hit: 0 nop -> 1 req read addr -> 2 cache reply read req -> 6 cache reply rdata
+//read miss: 0 nop -> 1 req read addr -> 2 cache reply read req -> 4 cache request read data from mem -> 6 cache reply rdata
+//write hit: 0 nop -> 5 transmit consistent wdata -> 7 cache reply 'bresp'
+//write miss:
+//cache writeback: 
+
 
 int ValidateReply() {
 	printf("test_case: %d PASSED!\n", test_case);
-	//TODO: compare diff of mem and StandardMem
+	//TODO: compare diff of mem and StandardMem, diff of cache_reply_buf and StandardCacheReplyBuf
 	return 0;
 }
 
@@ -97,7 +106,6 @@ int main(int argc, char** argv) {
 			top->reset = 1;    
 			
 			top->auto_in_a_valid = 0x0;
-			top->auto_in_a_bits_opcode = TLMESSAGE_GET;
 			top->auto_in_a_bits_dsid = 0x01;
 			top->auto_in_a_bits_param = 0x0;
 			top->auto_in_a_bits_size = 0x6;
@@ -125,10 +133,10 @@ int main(int argc, char** argv) {
 			// 	printInfo(""); //debug
 			// }
 
-			//request1: read miss
 			if (state == 0) {
 				if (test_case == 0) {
 					state = 1;
+					top->auto_in_a_bits_opcode = TLMESSAGE_GET;
 					top->auto_in_a_bits_address = 0x100000100;
 					top->auto_in_a_valid = 0x1; //weird problem happens if put valid & request singals in same cycle
 					printf("test_case %d START!\n", test_case);
@@ -137,8 +145,21 @@ int main(int argc, char** argv) {
 					//printf("in.a.size: %x\n", top->auto_in_a_bits_size);
 					//printf("in.a.mask: %x\n", top->auto_in_a_bits_mask);
 				}
-				if (test_case == 1) {
+				else if (test_case == 1) {
+					state = 5;
+					top->auto_in_a_bits_opcode = TLMESSAGE_PUTFULLDATA;
+					top->auto_in_a_bits_address = 0x100000100;
+					top->auto_in_a_bits_source = 0x010;
+					top->auto_in_a_bits_data = 0xbeefdeadbeefdead;
+					top->auto_in_a_valid = 0x1;
+					writeCntFromCPUToCache = 0;
+					printf("test_case %d START!\n", test_case);
+					printInfo("cpu: cpu(write req) ---> cache");
+					printf("in.a.addr: %lx\n", top->auto_in_a_bits_address);
+				}
+				else if (test_case == 2) {
 					state = 1;
+					top->auto_in_a_bits_opcode = TLMESSAGE_GET;
 					top->auto_in_a_bits_address = 0x100000100;
 					top->auto_in_a_valid = 0x1;
 					printf("test_case %d START!\n", test_case);
@@ -153,22 +174,30 @@ int main(int argc, char** argv) {
 				top->auto_in_a_valid = 0x0;
 			}
 
-			else if (state == 2 && (top->auto_out_a_valid&top->auto_out_a_ready == 0x1) && (top->auto_out_a_bits_opcode == TLMESSAGE_GET)) {
-				printInfo("mem: cache ---> mem(read req1)");
-				state = 4;
-				top->auto_out_a_ready = 0x0;
-				readCntFromMemToCache = 0;
-				printOutA();
-				to_mem_paddr = top->auto_out_a_bits_address;
-				to_mem_vaddr = PAddrToVAddr(to_mem_paddr);
-				//printf("DEBUG vaddr:%lx\n", to_mem_vaddr);
-				sentCacheData(mem[to_mem_vaddr][readCntFromMemToCache]);
-				printInfo("mem: cache <--- mem(data beat)");
-				printf("out.d.data: %lx\n", top->auto_out_d_bits_data);
+			else if (state == 2) {
+				if ((top->auto_out_a_valid&top->auto_out_a_ready == 0x1) && (top->auto_out_a_bits_opcode == TLMESSAGE_GET)) {
+					printInfo("mem: cache ---> mem(read req1)");
+					state = 4;
+					top->auto_out_a_ready = 0x0;
+					readCntFromMemToCache = 0;
+					printOutA();
+					to_mem_paddr = top->auto_out_a_bits_address;
+					to_mem_vaddr = PAddrToVAddr(to_mem_paddr);
+					//printf("DEBUG vaddr:%lx\n", to_mem_vaddr);
+					sentCacheData(mem[to_mem_vaddr][readCntFromMemToCache]);
+					printInfo("mem: cache <--- mem(data beat)");
+					printf("out.d.data: %lx\n", top->auto_out_d_bits_data);
+				}
+				else if ((top->auto_in_d_valid&&top->auto_in_d_ready == 0x1)) {
+					printInfo("cache: cpu <--- cache(read req)");
+					printInD();
+					state = 6;
+					readCntFromCacheToCPU = 0;
+					cache_reply_buf[readCntFromCacheToCPU] = top->auto_in_d_bits_data;
+				}
 			}
 
 			else if (state == 4) {
-				//state = 5;
 				sentCacheData(mem[to_mem_vaddr][readCntFromMemToCache]);
 				printInfo("mem: cache <--- mem(data beat)");
 				printf("out.d.data: %lx\n", top->auto_out_d_bits_data);
@@ -185,14 +214,6 @@ int main(int argc, char** argv) {
 						//printInfo("cache: has recvd all data beats from mem");
 					}
 				}
-			}
-			else if (state == 2 && (top->auto_in_d_valid&&top->auto_in_d_ready == 0x1)) {
-				printInfo("cache: cpu <--- cache(read req)");
-				printInD();
-				top->auto_in_d_ready = 0x1;
-				state = 6;
-				readCntFromCacheToCPU = 0;
-				cache_reply_buf[readCntFromCacheToCPU] = top->auto_in_d_bits_data;
 			}
 
 			else if (state == 6) {
@@ -212,9 +233,37 @@ int main(int argc, char** argv) {
 					}
 				}
 			}
+
+			else if (state == 5) {
+				top->auto_in_a_bits_data = 0xbeefdeadbeefdead + writeCntFromCPUToCache;
+				printInfo("cpu: cpu(wdata beat) ---> cache");
+				printf("in.a.data: %lx\n", top->auto_in_a_bits_data);
+				if (top->auto_in_a_valid&&top->auto_in_a_ready == 0x1) {
+					printInfo("cache: cpu ---> cache(read req)");
+					writeCntFromCPUToCache++;
+					printf("writeCntFromCPUToCache: %lx\n", writeCntFromCPUToCache);
+					if (writeCntFromCPUToCache == 8) {
+						state = 7;
+						top->auto_in_a_valid = 0x0;
+						writeCntFromCPUToCache = -1;
+					}
+				}
+			}
+
+			else if (state == 7) {
+				if (top->auto_in_d_ready && top->auto_in_d_valid == 0x1) {
+					state = 0;
+					printInfo("cache: cpu <---- cache");
+
+					printf("successfully written into cache.\n");
+					test_case++;
+				}
+			}
+
 			else {
 				//printInfo("");
 			}
+				
 		}
 
 		top->eval();            // Evaluate model
