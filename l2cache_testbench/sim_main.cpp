@@ -2,26 +2,30 @@
 #include <iostream>             // Need std::cout
 #include "VTLSimpleL2Cache.h"               // From Verilating "top.v"
 #define TOP VTLSimpleL2Cache
-typedef int u32;
-typedef long u64;
-typedef char u8;
-TOP* top;                     // Instantiation of module
-vluint64_t main_time = 0;       // Current simulation time
 #define RESET_TIME 10000
-int state = 0;
 #define TEST_END 70000
 #define TLMESSAGE_GET 0x4
 #define TLMESSAGE_PUTFULLDATA 0x0
 #define MEM_SIZE 0xffff
+
+typedef int u32;
+typedef long u64;
+typedef char u8;
+
+TOP* top;                     // Instantiation of module
+vluint64_t main_time = 0;       // Current simulation time
+int state = 0;					// simulator state
+int test_case;
+int test_case_type = 0; //0: read case; 1: write case;
+u64 test_case_addr = 0x0;
+u8 mem[MEM_SIZE];
+
 int readCntFromMemToCache = -1;
 int readCntFromCacheToCPU = -1;
 int writeCntFromCPUToCache = -1;
-u64 mem[MEM_SIZE][8];
 u64 cache_reply_buf[8];
-int test_case;
 u64 to_mem_paddr; 
 u64 to_mem_vaddr;
-int test_case_type = 0; //0: read; 1: write;
 //0 <--> nop; 1 <--> request read/write addr; 2 <--> cache reply 1; 6 <--> cpu reply data
 //4 <--> cache request read data from mem(8 beats total);
 //5 <--> transmit consistent wdata (8 beats total)
@@ -39,7 +43,7 @@ int ValidateReply() {
 }
 
 u64 PAddrToVAddr(u64 paddr) {
-	return paddr & 0x0000000000000fff;
+	return (paddr & 0x000000000000ffff);
 }
 
 void printInfo(const char* str) {
@@ -71,9 +75,26 @@ void printInD() {
 	printf("in.d.data: %lx\n", top->auto_in_d_bits_data);
 }
 
-void sentCacheData(u64 val) {
+void op_sendDataFromMemToCache(u64 val) {
 	top->auto_out_d_valid = 0x1;
-	top->auto_out_d_bits_data = val; //TODO: mem array
+	top->auto_out_d_bits_data = val;
+}
+
+void op_reqCacheReadData(u64 addr) {
+	top->auto_in_a_bits_opcode = TLMESSAGE_GET;
+	top->auto_in_a_bits_address = addr;
+	top->auto_in_a_valid = 0x1; //weird problem happens if put valid & request singals in same cycle
+}
+
+void op_reqCacheWriteData(u64 addr, u64 first_data_beat) {
+	writeCntFromCPUToCache = 0;
+	top->auto_in_a_bits_address = addr;
+	top->auto_in_a_bits_data = first_data_beat;
+	top->auto_in_a_valid = 0x1;
+}
+
+void op_reqCacheWriteData1(u64 next_data_beat) {
+	top->auto_in_a_bits_data = next_data_beat;
 }
 
 double sc_time_stamp () {       // Called by $time in Verilog
@@ -81,15 +102,53 @@ double sc_time_stamp () {       // Called by $time in Verilog
 								// what SystemC does
 }
 
+u64 getMemData(u64 start_addr, int len_byte) {
+	if (len_byte != 8) return 0x0;
+	u64 result;
+	memcpy(&result, (u8 *)(mem + start_addr), len_byte);
+	//printf("get***%lx: %lx\n", start_addr, result);
+	return result;
+}
+
+void writeMemData(u64 start_addr, u64 wdata, int len_byte) {
+	if (len_byte != 8) return;
+	u64 data = wdata;
+	//printf("write***%lx: %lx\n", start_addr, data);
+	memcpy((u8 *)(mem + start_addr), &data, len_byte);
+}
+
 void initMainMemory () {
-	mem[0x000000100][0] = 0xdeadbeef2040406f;
-	mem[0x000000100][1] = 0xdeadbeefaaaaaaaa;
-	mem[0x000000100][2] = 0xdeadbeefbbbbbbbb;
-	mem[0x000000100][3] = 0xdeadbeefcccccccc;
-	mem[0x000000100][4] = 0xdeadbeefdddddddd;
-	mem[0x000000100][5] = 0xdeadbeefeeeeeeee;
-	mem[0x000000100][6] = 0xdeadbeefffffffff;
-	mem[0x000000100][7] = 0xdeadbeefdeadbeef;
+	/*for (int i = 0x0; i < 0xff; i++) {
+		for (int j = 0; j <8; j++) {
+			mem[i << 6 + j] = 0xdeadbeef00000000 + j;
+			printf("%d %d %d\n", i , j, i << 6 + j);
+		}
+	}*/
+	writeMemData(0x000001100, 0xdeadbeef2040406f, 8);
+	writeMemData(0x000001108, 0xdeadbeefaaaaaaaa, 8);
+	writeMemData(0x000001110, 0xdeadbeefbbbbbbbb, 8);
+	writeMemData(0x000001118, 0xdeadbeefcccccccc, 8);
+	writeMemData(0x000001120, 0xdeadbeefdddddddd, 8);
+	writeMemData(0x000001128, 0xdeadbeefeeeeeeee, 8);
+	writeMemData(0x000001130, 0xdeadbeefffffffff, 8);
+	writeMemData(0x000001138, 0xdeadbeefdeadbeef, 8);
+/*	mem[0x000000100 + 0] = 0xdeadbeef2040406f;
+	mem[0x000000100 + 1] = 0xdeadbeefaaaaaaaa;
+	mem[0x000000100 + 2] = 0xdeadbeefbbbbbbbb;
+	mem[0x000000100 + 3] = 0xdeadbeefcccccccc;
+	mem[0x000000100 + 4] = 0xdeadbeefdddddddd;
+	mem[0x000000100 + 5] = 0xdeadbeefeeeeeeee;
+	mem[0x000000100 + 6] = 0xdeadbeefffffffff;
+	mem[0x000000100 + 7] = 0xdeadbeefdeadbeef;*/
+
+/*	mem[0x000001100 + 0] = 0xbeefdead00000000;
+	mem[0x000001100 + 1] = 0xbeefdead11111111;
+	mem[0x000001100 + 2] = 0xbeefdead22222222;
+	mem[0x000001100 + 3] = 0xbeefdead33333333;
+	mem[0x000001100 + 4] = 0xbeefdead44444444;
+	mem[0x000001100 + 5] = 0xbeefdead55555555;
+	mem[0x000001100 + 6] = 0xbeefdead66666666;
+	mem[0x000001100 + 7] = 0xbeefdead77777777;*/
 }
 
 int main(int argc, char** argv) {
@@ -138,9 +197,7 @@ int main(int argc, char** argv) {
 				if (test_case == 0) {
 					state = 1;
 					test_case_type = 0;
-					top->auto_in_a_bits_opcode = TLMESSAGE_GET;
-					top->auto_in_a_bits_address = 0x100001100;
-					top->auto_in_a_valid = 0x1; //weird problem happens if put valid & request singals in same cycle
+					op_reqCacheReadData(0x100001100);
 					printf("test_case %d START!\n", test_case);
 					printInfo("cpu: cpu(read req) ---> cache");
 					printf("in.a.addr: %lx\n", top->auto_in_a_bits_address);
@@ -151,11 +208,8 @@ int main(int argc, char** argv) {
 					state = 5;
 					top->auto_in_a_bits_opcode = TLMESSAGE_PUTFULLDATA;
 					test_case_type = 1;
-					top->auto_in_a_bits_address = 0x100000100;
-					top->auto_in_a_bits_source = 0x010;
-					top->auto_in_a_bits_data = 0xbeefdeadbeefdead;
-					top->auto_in_a_valid = 0x1;
-					writeCntFromCPUToCache = 0;
+					test_case_addr = 0x100000100;
+					op_reqCacheWriteData(test_case_addr, 0xdeadbeef00000000);
 					printf("test_case %d START!\n", test_case);
 					printInfo("cpu: cpu(write req) ---> cache");
 					printf("in.a.addr: %lx\n", top->auto_in_a_bits_address);
@@ -163,9 +217,7 @@ int main(int argc, char** argv) {
 				else if (test_case == 2) {
 					state = 1;
 					test_case_type = 0;
-					top->auto_in_a_bits_opcode = TLMESSAGE_GET;
-					top->auto_in_a_bits_address = 0x100000100;
-					top->auto_in_a_valid = 0x1;
+					op_reqCacheReadData(0x100000100);
 					printf("test_case %d START!\n", test_case);
 					printInfo("cpu: cpu(read req) ---> cache");
 					printf("in.a.addr: %lx\n", top->auto_in_a_bits_address);
@@ -188,7 +240,7 @@ int main(int argc, char** argv) {
 					to_mem_paddr = top->auto_out_a_bits_address;
 					to_mem_vaddr = PAddrToVAddr(to_mem_paddr);
 					//printf("DEBUG vaddr:%lx\n", to_mem_vaddr);
-					sentCacheData(mem[to_mem_vaddr][readCntFromMemToCache]);
+					op_sendDataFromMemToCache(getMemData(to_mem_vaddr + readCntFromMemToCache * 8, 8));
 					//printInfo("mem: cache <--- mem(data beat)");
 					//printf("out.d.data: %lx\n", top->auto_out_d_bits_data);
 				}
@@ -202,7 +254,8 @@ int main(int argc, char** argv) {
 			}
 
 			else if (state == 4) {
-				sentCacheData(mem[to_mem_vaddr][readCntFromMemToCache]);
+				//printf("***DEBUG %d\n", to_mem_vaddr + readCntFromMemToCache);
+				op_sendDataFromMemToCache(getMemData(to_mem_vaddr + readCntFromMemToCache * 8, 8));
 				printInfo("mem: cache <--- mem(data beat)");
 				printf("out.d.data: %lx\n", top->auto_out_d_bits_data);
 
@@ -210,7 +263,7 @@ int main(int argc, char** argv) {
 					readCntFromMemToCache++;
 					printInfo("cache: cache(data beat) <--- mem");
 					printf("readCntFromMemToCache: %lx\n", readCntFromMemToCache);
-					if (readCntFromMemToCache == 8) { //wired when sent 8 beats only
+					if (readCntFromMemToCache == 8) { 
 						
 						if (test_case_type == 0)
 							state = 2;
@@ -243,7 +296,7 @@ int main(int argc, char** argv) {
 			}
 
 			else if (state == 5) {
-				top->auto_in_a_bits_data = 0xbeefdeadbeefdead + writeCntFromCPUToCache;
+				op_reqCacheWriteData1(0xdeadbeef00000000 + writeCntFromCPUToCache);
 				printInfo("cpu: cpu(wdata beat) ---> cache");
 				printf("in.a.data: %lx\n", top->auto_in_a_bits_data);
 				if (top->auto_in_a_valid&&top->auto_in_a_ready == 0x1) {
@@ -266,10 +319,11 @@ int main(int argc, char** argv) {
 			}
 
 			else if (state == 8) {
-				if (top->TLSimpleL2Cache__DOT___T_267 == 0x0) {
+				if (top->TLSimpleL2Cache__DOT___T_267 == 0x0) { //T_267 is cache_state
 					state = 0;
 					printf("test_case %d: successfully written into cache.\n", test_case);
 					printInfo("");
+					test_case_addr = 0x0;
 					test_case++;
 				}
 				else if ((top->auto_out_a_valid&top->auto_out_a_ready == 0x1) && (top->auto_out_a_bits_opcode == TLMESSAGE_GET)) {
@@ -281,7 +335,7 @@ int main(int argc, char** argv) {
 					to_mem_paddr = top->auto_out_a_bits_address;
 					to_mem_vaddr = PAddrToVAddr(to_mem_paddr);
 					//printf("DEBUG vaddr:%lx\n", to_mem_vaddr);
-					sentCacheData(mem[to_mem_vaddr][readCntFromMemToCache]);
+					op_sendDataFromMemToCache(getMemData(to_mem_vaddr + readCntFromMemToCache * 8, 8));
 					printInfo("mem: cache <--- mem(data beat)");
 					printf("out.d.data: %lx\n", top->auto_out_d_bits_data);
 				}
