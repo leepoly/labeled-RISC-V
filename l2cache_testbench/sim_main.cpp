@@ -3,7 +3,7 @@
 #include "VTLSimpleL2Cache.h"               // From Verilating "top.v"
 #define TOP VTLSimpleL2Cache
 #define RESET_TIME 10000
-#define TEST_END 70000
+#define TEST_END 100000
 #define TLMESSAGE_GET 0x4
 #define TLMESSAGE_PUTFULLDATA 0x0
 #define MEM_SIZE 0xffff
@@ -23,18 +23,20 @@ u8 mem[MEM_SIZE];
 int readCntFromMemToCache = -1;
 int readCntFromCacheToCPU = -1;
 int writeCntFromCPUToCache = -1;
+int writeCntFromCacheToMem = -1;
 u64 cache_reply_buf[8];
 u64 to_mem_paddr; 
 u64 to_mem_vaddr;
 //0 <--> nop; 1 <--> request read/write addr; 2 <--> cache reply 1; 6 <--> cpu reply data
 //4 <--> cache request read data from mem(8 beats total);
 //5 <--> transmit consistent wdata (8 beats total)
+//Trace: 
 //read hit: 0 nop -> 1 req read addr -> 2 cache reply read req -> 6 cache reply rdata
 //read miss: 0 nop -> 1 req read addr -> 2 cache reply read req -> 4 cache request read data from mem -> 6 cache reply rdata
 //write hit: 0 nop -> 5 transmit consistent wdata -> 7 cache reply 'bresp' -> 8 cache state turn 'idle'(cache real finished)
 //write miss:
-//cache writeback: 
-
+//read miss writeback: 0 nop -> 1 req read addr -> 2 cache reply read req -> 9 cache wdata to ram -> 2 -> 4 cache request read data from mem -> 6 cache reply rdata
+//write miss writeback: 0 nop -> 5 transmit consistent wdata -> 7 cache reply 'bresp' -> 8 cache state turn 'idle'(cache real finished) -> 9 cache wdata to ram -> 8
 
 int ValidateReply() {
 	printf("test_case: %d PASSED!\n", test_case);
@@ -80,6 +82,10 @@ void op_sendDataFromMemToCache(u64 val) {
 	top->auto_out_d_bits_data = val;
 }
 
+void op_sendBrespFromMemToCache() {
+	top->auto_out_d_valid = 0x1;
+}
+
 void op_reqCacheReadData(u64 addr) {
 	top->auto_in_a_bits_opcode = TLMESSAGE_GET;
 	top->auto_in_a_bits_address = addr;
@@ -118,20 +124,9 @@ void writeMemData(u64 start_addr, u64 wdata, int len_byte) {
 }
 
 void initMainMemory () {
-	/*for (int i = 0x0; i < 0xff; i++) {
-		for (int j = 0; j <8; j++) {
-			mem[i << 6 + j] = 0xdeadbeef00000000 + j;
-			printf("%d %d %d\n", i , j, i << 6 + j);
-		}
-	}*/
-	writeMemData(0x000001100, 0xdeadbeef2040406f, 8);
-	writeMemData(0x000001108, 0xdeadbeefaaaaaaaa, 8);
-	writeMemData(0x000001110, 0xdeadbeefbbbbbbbb, 8);
-	writeMemData(0x000001118, 0xdeadbeefcccccccc, 8);
-	writeMemData(0x000001120, 0xdeadbeefdddddddd, 8);
-	writeMemData(0x000001128, 0xdeadbeefeeeeeeee, 8);
-	writeMemData(0x000001130, 0xdeadbeefffffffff, 8);
-	writeMemData(0x000001138, 0xdeadbeefdeadbeef, 8);
+	for (int i = 0x1100; i < 0xff00; i = i + 8) {
+		writeMemData(i, i, 8);
+	}
 /*	mem[0x000000100 + 0] = 0xdeadbeef2040406f;
 	mem[0x000000100 + 1] = 0xdeadbeefaaaaaaaa;
 	mem[0x000000100 + 2] = 0xdeadbeefbbbbbbbb;
@@ -197,7 +192,7 @@ int main(int argc, char** argv) {
 				if (test_case == 0) {
 					state = 1;
 					test_case_type = 0;
-					op_reqCacheReadData(0x100001100);
+					op_reqCacheReadData(0x100001100 + test_case * 64);
 					printf("test_case %d START!\n", test_case);
 					printInfo("cpu: cpu(read req) ---> cache");
 					printf("in.a.addr: %lx\n", top->auto_in_a_bits_address);
@@ -250,6 +245,16 @@ int main(int argc, char** argv) {
 					state = 6;
 					readCntFromCacheToCPU = 0;
 					cache_reply_buf[readCntFromCacheToCPU] = top->auto_in_d_bits_data;
+				}
+				else if ((top->auto_out_a_valid&top->auto_out_a_ready == 0x1) && (top->auto_out_a_bits_opcode == TLMESSAGE_PUTFULLDATA)) {
+					printInfo("mem: cache ---> mem(write req: olddata)");
+					state = 9;
+					top->auto_out_a_ready = 0x1;
+					writeCntFromCacheToMem = 1; //mem have received the first wdata beat
+					printOutA();
+					to_mem_paddr = top->auto_out_a_bits_address;
+					to_mem_vaddr = PAddrToVAddr(to_mem_paddr);
+					writeMemData(to_mem_vaddr, top->auto_out_a_bits_data, 8);
 				}
 			}
 
@@ -338,6 +343,24 @@ int main(int argc, char** argv) {
 					op_sendDataFromMemToCache(getMemData(to_mem_vaddr + readCntFromMemToCache * 8, 8));
 					printInfo("mem: cache <--- mem(data beat)");
 					printf("out.d.data: %lx\n", top->auto_out_d_bits_data);
+				}
+			}
+
+			else if (state == 9) {
+				//writeback
+				if ((top->auto_out_a_ready&top->auto_out_a_valid == 0x1) && (top->auto_out_a_bits_opcode == TLMESSAGE_PUTFULLDATA)) {
+					printf("out.a.data: %lx\n", top->auto_out_a_bits_data);
+					writeMemData(to_mem_vaddr + writeCntFromCacheToMem * 8, top->auto_out_a_bits_data, 8);
+					writeCntFromCacheToMem++;
+					printf("writeCntFromCacheToMem: %d\n", writeCntFromCacheToMem);
+					if (writeCntFromCacheToMem == 8) {
+						writeCntFromCacheToMem = -1;
+						op_sendBrespFromMemToCache();
+						if (test_case_type == 0) 
+							state = 2;
+						else if (test_case_type == 1)
+							state = 8;
+					}
 				}
 			}
 
