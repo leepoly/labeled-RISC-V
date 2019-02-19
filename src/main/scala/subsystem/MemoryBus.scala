@@ -22,7 +22,7 @@ case object BroadcastKey extends Field(BroadcastParams())
 /** L2 memory subsystem configuration */
 case class BankedL2Params(
   nMemoryChannels:  Int = 1,
-  nBanksPerChannel: Int = 1,
+  nBanksPerChannel: Int = 4,
   coherenceManager: BaseSubsystem => (TLInwardNode, TLOutwardNode, () => Option[Bool]) = { subsystem =>
     implicit val p = subsystem.p
     val BroadcastParams(nTrackers, bufferless) = p(BroadcastKey)
@@ -80,3 +80,22 @@ class MemoryBus(params: MemoryBusParams, channel: Int, nChannels: Int, nBanks: I
     to("memory_controller" named name) { gen := TLBuffer(buffer) := outwardNode }
   }
 }
+
+// class L2CacheBus(params: MemoryBusParams, nBanks: Int)(implicit p: Parameters)
+//     extends TLBusWrapper(params, "l2cache_bus")(p)
+//     with CanAttachTLSlaves
+//     with HasTLXbarPhy {
+
+//   def bankFilter(bank: Int) = AddressSet(
+//     base = (bank) * params.blockBytes,
+//     mask = ~BigInt((nBanks-1) * params.blockBytes))
+
+
+//   def toL2CacheControl[D,U,E,B <: Data]//xxx
+//       (name: Option[String] = None, buffer: BufferParams = BufferParams.none)
+//       (gen: => NodeHandle[ TLClientPortParameters,TLManagerPortParameters,TLEdgeIn,TLBundle, D,U,E,B] =
+//         TLNameNode(name)): OutwardNodeHandle[D,U,E,B] = {
+//     to("memory_controller" named name) { gen := TLBuffer(buffer) := outwardNode }
+//   }
+
+// }

@@ -33,7 +33,7 @@ class TLSimpleL2Cache(param: TLL2CacheParams)(implicit p: Parameters) extends La
 with HasControlPlaneParameters
 {
   val node = TLAdapterNode(
-    clientFn = { c => c.copy(clients = c.clients map { c2 => c2.copy(sourceId = IdRange(0, 1))} )}
+    //clientFn = { c => c.copy(clients = c.clients map { c2 => c2.copy(sourceId = IdRange(0, 1))} )}
   )
 
   lazy val module = new LazyModuleImp(this) {
@@ -106,9 +106,9 @@ with HasControlPlaneParameters
       val timer = GTimer()
       val log_prefix = "cycle: %d [L2Cache] state %x "
       def log_raw(prefix: String, fmt: String, tail: String, args: Bits*) = {
-        //if (param.debug) {
+        if (param.debug) {
           printf(prefix + fmt + tail, args:_*)
-        //}
+        }
       }
 
       /** Single log */
