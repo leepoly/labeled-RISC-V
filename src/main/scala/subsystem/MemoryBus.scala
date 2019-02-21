@@ -22,7 +22,7 @@ case object BroadcastKey extends Field(BroadcastParams())
 /** L2 memory subsystem configuration */
 case class BankedL2Params(
   nMemoryChannels:  Int = 1,
-  nBanksPerChannel: Int = 4,
+  nBanksPerChannel: Int = 1,
   coherenceManager: BaseSubsystem => (TLInwardNode, TLOutwardNode, () => Option[Bool]) = { subsystem =>
     implicit val p = subsystem.p
     val BroadcastParams(nTrackers, bufferless) = p(BroadcastKey)

@@ -124,6 +124,7 @@ class With1TinyCore extends Config((site, here, up) => {
 })
 
 class WithNBanksPerMemChannel(n: Int) extends Config((site, here, up) => {
+  case NBanksPerMemChannel => n
   case BankedL2Key => up(BankedL2Key, site).copy(nBanksPerChannel = n)
 })
 
@@ -372,3 +373,4 @@ class WithNL2CacheCapacity(kb: Int) extends Config((site, here, up) => {
 class WithNL2CacheWays(ways: Int) extends Config((site, here, up) => {
   case NL2CacheWays => ways
 })
+

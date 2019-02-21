@@ -40,7 +40,7 @@ with HasControlPlaneParameters
     println(s"bankid=$bankid")
     val nWays = p(NL2CacheWays)
     println(s"nWays = $nWays")
-    val nSets = p(NL2CacheCapacity) * 1024 / 64 / nWays
+    val nSets = p(NL2CacheCapacity) * 1024 / 64 / nWays / p(NBanksPerMemChannel)
     println(s"nSets = $nSets")
     val cp = IO(new CPToL2CacheIO().flip())
     (node.in zip node.out) foreach { case ((in, edgeIn), (out, edgeOut)) =>
