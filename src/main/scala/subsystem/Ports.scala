@@ -165,6 +165,7 @@ trait CanHaveMasterAXI4MemPort { this: BaseSubsystem =>
   
   //val l2caches: List[TLSimpleL2Cache] = if (p(NL2CacheCapacity) != 0) List.fill(nBanks)(TLSimpleL2CacheRef()) else List.fill(nBanks)(null)
   
+<<<<<<< HEAD
   //val l2caches1 = List.fill(nBanks)(TLSimpleL2Cache)
   //val l2caches = l2caches1.map { l2cache => if (p(NL2CacheCapacity) != 0) TLSimpleL2CacheRef() else null }
   //private val l2nodes = l2caches.map( l2cache => l2cache.node)
@@ -173,6 +174,16 @@ trait CanHaveMasterAXI4MemPort { this: BaseSubsystem =>
     memBuses./*zip(l2nodes).*/map { /*case(m, l2)*/ m =>
        memAXI4Node := m.toDRAMController(Some(portName)) {
         AXI4Dumper() := AXI4UserYanker() := AXI4IdIndexer(params.idBits) := TLToAXI4()// := l2
+=======
+  val l2caches1 = List.fill(nBanks)(TLSimpleL2Cache)
+  val l2caches = l2caches1.map { l2cache => if (p(NL2CacheCapacity) != 0) TLSimpleL2CacheRef() else null }
+  private val l2nodes = l2caches.map( l2cache => l2cache.node)
+
+  memPortParamsOpt.foreach { params =>
+    memBuses.zip(l2nodes).map { case(m, l2) =>
+       memAXI4Node := m.toDRAMController(Some(portName)) {
+        AXI4Dumper() := AXI4UserYanker() := AXI4IdIndexer(params.idBits) := TLToAXI4() := l2
+>>>>>>> cff17f522da7c6c7949eeadc139d111fbef23f72
       }
     }
   }

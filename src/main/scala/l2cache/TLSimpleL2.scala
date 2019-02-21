@@ -129,7 +129,11 @@ with HasControlPlaneParameters
           in.a.bits.address,
           in.a.bits.mask,
           in.a.bits.data)
+<<<<<<< HEAD
         /*println("in.a opcode %x, dsid %x, param %x, size %x, source %x, address %x, mask %x, data %x",
+=======
+        println("in.a opcode %x, dsid %x, param %x, size %x, source %x, address %x, mask %x, data %x",
+>>>>>>> cff17f522da7c6c7949eeadc139d111fbef23f72
           in.a.bits.opcode,
           in.a.bits.dsid,
           in.a.bits.param,
@@ -137,7 +141,11 @@ with HasControlPlaneParameters
           in.a.bits.source,
           in.a.bits.address,
           in.a.bits.mask,
+<<<<<<< HEAD
           in.a.bits.data)*/
+=======
+          in.a.bits.data)
+>>>>>>> cff17f522da7c6c7949eeadc139d111fbef23f72
       }
 
       when (out.a.fire()) {
@@ -150,7 +158,11 @@ with HasControlPlaneParameters
           out.a.bits.address,
           out.a.bits.mask,
           out.a.bits.data)
+<<<<<<< HEAD
         /*println("out.a.opcode %x, dsid %x, param %x, size %x, source %x, address %x, mask %x, data %x",
+=======
+        println("out.a.opcode %x, dsid %x, param %x, size %x, source %x, address %x, mask %x, data %x",
+>>>>>>> cff17f522da7c6c7949eeadc139d111fbef23f72
           out.a.bits.opcode,
           out.a.bits.dsid,
           out.a.bits.param,
@@ -158,7 +170,11 @@ with HasControlPlaneParameters
           out.a.bits.source,
           out.a.bits.address,
           out.a.bits.mask,
+<<<<<<< HEAD
           out.a.bits.data)*/
+=======
+          out.a.bits.data)
+>>>>>>> cff17f522da7c6c7949eeadc139d111fbef23f72
       }
 
 
