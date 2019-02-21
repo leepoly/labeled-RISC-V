@@ -16,7 +16,7 @@ class AXI4IdIndexer(idBits: Int)(implicit p: Parameters) extends LazyModule
       // Create one new "master" per ID
       val masters = Array.tabulate(1 << idBits) { i => AXI4MasterParameters(
          name      = "",
-         id        = IdRange(i, i+1),
+         id        = IdRange(i, i + 1),
          aligned   = true,
          maxFlight = Some(0))
       }

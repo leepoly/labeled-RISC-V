@@ -16,7 +16,7 @@ import freechips.rocketchip.tilelink._
 import lvna.{HasControlPlaneParameters, CPToL2CacheIO}
 
 case class TLL2CacheParams(
-  debug: Boolean = false
+  debug: Boolean = true
 )
 
 class MetadataEntry(tagBits: Int, dsidWidth: Int) extends Bundle {
@@ -29,14 +29,15 @@ class MetadataEntry(tagBits: Int, dsidWidth: Int) extends Bundle {
 }
 
 // ============================== DCache ==============================
-class TLSimpleL2Cache(param: TLL2CacheParams)(implicit p: Parameters) extends LazyModule
+class TLSimpleL2Cache(bankid: Int, param: TLL2CacheParams)(implicit p: Parameters) extends LazyModule
 with HasControlPlaneParameters
 {
   val node = TLAdapterNode(
-    clientFn = { c => c.copy(clients = c.clients map { c2 => c2.copy(sourceId = IdRange(0, 1))} )}
+    //clientFn = { c => c.copy(clients = c.clients map { c2 => c2.copy(sourceId = IdRange(0, 1))} )}
   )
 
   lazy val module = new LazyModuleImp(this) {
+    println(s"bankid=$bankid")
     val nWays = p(NL2CacheWays)
     println(s"nWays = $nWays")
     val nSets = p(NL2CacheCapacity) * 1024 / 64 / nWays
@@ -104,7 +105,7 @@ with HasControlPlaneParameters
       // write miss writeback : s_idle -> s_gather_write_data ->  s_send_bresp -> s_tag_read -> s_data_read -> s_wait_ram_awready -> s_do_ram_write -> s_wait_ram_bresp
       //                               -> s_wait_ram_arready -> s_do_ram_read -> s_merge_put_data -> s_data_write -> s_update_meta -> s_idle
       val timer = GTimer()
-      val log_prefix = "cycle: %d [L2Cache] state %x "
+      val log_prefix = "bankid: %d cycle: %d [L2Cache] state %x "
       def log_raw(prefix: String, fmt: String, tail: String, args: Bits*) = {
         if (param.debug) {
           printf(prefix + fmt + tail, args:_*)
@@ -112,9 +113,9 @@ with HasControlPlaneParameters
       }
 
       /** Single log */
-      def log(fmt: String, args: Bits*) = log_raw(log_prefix, fmt, "\n", timer +: state +: args:_*)
+      def log(fmt: String, args: Bits*) = log_raw(log_prefix, fmt, "\n", bankid.U +: timer +: state +: args:_*)
       /** Log with line continued */
-      def log_part(fmt: String, args: Bits*) = log_raw(log_prefix, fmt, "", timer +: state +: args:_*)
+      def log_part(fmt: String, args: Bits*) = log_raw(log_prefix, fmt, "", bankid.U +: timer +: state +: args:_*)
       /** Log with nothing added */
       def log_plain(fmt: String, args: Bits*) = log_raw("", fmt, "", args:_*)
 
@@ -128,6 +129,15 @@ with HasControlPlaneParameters
           in.a.bits.address,
           in.a.bits.mask,
           in.a.bits.data)
+        /*println("in.a opcode %x, dsid %x, param %x, size %x, source %x, address %x, mask %x, data %x",
+          in.a.bits.opcode,
+          in.a.bits.dsid,
+          in.a.bits.param,
+          in.a.bits.size,
+          in.a.bits.source,
+          in.a.bits.address,
+          in.a.bits.mask,
+          in.a.bits.data)*/
       }
 
       when (out.a.fire()) {
@@ -140,6 +150,15 @@ with HasControlPlaneParameters
           out.a.bits.address,
           out.a.bits.mask,
           out.a.bits.data)
+        /*println("out.a.opcode %x, dsid %x, param %x, size %x, source %x, address %x, mask %x, data %x",
+          out.a.bits.opcode,
+          out.a.bits.dsid,
+          out.a.bits.param,
+          out.a.bits.size,
+          out.a.bits.source,
+          out.a.bits.address,
+          out.a.bits.mask,
+          out.a.bits.data)*/
       }
 
 
@@ -302,12 +321,16 @@ with HasControlPlaneParameters
       val curr_state_reg = Reg(Bits(width = nWays))
       val set_dsids_reg = Reg(Vec(nWays, UInt(width = dsidWidth.W)))
 
+      val set_first_access_flag = RegInit(Vec(Seq.fill(nSets){ Bool(true) }))
+      val init_state = ((1 << nWays) - 1).U(nWays.W)
+
       when (state === s_tag_read_resp) {
         state := s_tag_read
         vb_rdata_reg := vb_rdata
         db_rdata_reg := db_rdata
         tag_rdata_reg := tag_rdata
-        curr_state_reg := curr_state
+        curr_state_reg := Mux(set_first_access_flag(idx), init_state, curr_state)
+        set_first_access_flag(idx) := false.B
         set_dsids_reg := set_dsids
       }
 
@@ -389,7 +412,6 @@ with HasControlPlaneParameters
         metadata.dirty := false.B
         metadata.tag := 0.U
         metadata.dsid := 0.U
-        metadata.rr_state := false.B
       }
 
 
@@ -671,10 +693,10 @@ with HasControlPlaneParameters
 
 object TLSimpleL2Cache
 {
-  def apply()(implicit p: Parameters): TLNode =
+  def apply(bankid: Int)(implicit p: Parameters): TLNode =
   {
     if (p(NL2CacheCapacity) != 0) {
-      val tlsimpleL2cache = LazyModule(new TLSimpleL2Cache(TLL2CacheParams()))
+      val tlsimpleL2cache = LazyModule(new TLSimpleL2Cache(bankid, TLL2CacheParams()))
       tlsimpleL2cache.node
     }
     else {
@@ -686,8 +708,8 @@ object TLSimpleL2Cache
 
 object TLSimpleL2CacheRef
 {
-  def apply()(implicit p: Parameters): TLSimpleL2Cache = {
-    val tlsimpleL2cache = LazyModule(new TLSimpleL2Cache(TLL2CacheParams()))
+  def apply(bankid: Int)(implicit p: Parameters): TLSimpleL2Cache = {
+    val tlsimpleL2cache = LazyModule(new TLSimpleL2Cache(bankid, TLL2CacheParams()))
     tlsimpleL2cache
   }
 }
