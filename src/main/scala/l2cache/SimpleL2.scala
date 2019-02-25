@@ -16,6 +16,7 @@ import freechips.rocketchip.amba.axi4._
 
 case object NL2CacheCapacity extends Field[Int](2048)
 case object NL2CacheWays extends Field[Int](16)
+case object NBanksPerMemChannel extends Field[Int](4)
 
 case class L2CacheParams(
   debug: Boolean = false

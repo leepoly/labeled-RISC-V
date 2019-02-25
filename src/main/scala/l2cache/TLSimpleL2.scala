@@ -16,7 +16,7 @@ import freechips.rocketchip.tilelink._
 import lvna.{HasControlPlaneParameters, CPToL2CacheIO}
 
 case class TLL2CacheParams(
-  debug: Boolean = false
+  debug: Boolean = true //false
 )
 
 class MetadataEntry(tagBits: Int, dsidWidth: Int) extends Bundle {
@@ -29,17 +29,18 @@ class MetadataEntry(tagBits: Int, dsidWidth: Int) extends Bundle {
 }
 
 // ============================== DCache ==============================
-class TLSimpleL2Cache(param: TLL2CacheParams)(implicit p: Parameters) extends LazyModule
+class TLSimpleL2Cache(bankid: Int, param: TLL2CacheParams)(implicit p: Parameters) extends LazyModule
 with HasControlPlaneParameters
 {
   val node = TLAdapterNode(
-    clientFn = { c => c.copy(clients = c.clients map { c2 => c2.copy(sourceId = IdRange(0, 1))} )}
+    //clientFn = { c => c.copy(clients = c.clients map { c2 => c2.copy(sourceId = IdRange(0, 1))} )}
   )
 
   lazy val module = new LazyModuleImp(this) {
+    println(s"bankid=$bankid")
     val nWays = p(NL2CacheWays)
     println(s"nWays = $nWays")
-    val nSets = p(NL2CacheCapacity) * 1024 / 64 / nWays
+    val nSets = p(NL2CacheCapacity) * 1024 / 64 / nWays / p(NBanksPerMemChannel)
     println(s"nSets = $nSets")
     val cp = IO(new CPToL2CacheIO().flip())
     (node.in zip node.out) foreach { case ((in, edgeIn), (out, edgeOut)) =>
@@ -104,7 +105,7 @@ with HasControlPlaneParameters
       // write miss writeback : s_idle -> s_gather_write_data ->  s_send_bresp -> s_tag_read -> s_data_read -> s_wait_ram_awready -> s_do_ram_write -> s_wait_ram_bresp
       //                               -> s_wait_ram_arready -> s_do_ram_read -> s_merge_put_data -> s_data_write -> s_update_meta -> s_idle
       val timer = GTimer()
-      val log_prefix = "cycle: %d [L2Cache] state %x "
+      val log_prefix = "bankid: %d cycle: %d [L2Cache] state %x "
       def log_raw(prefix: String, fmt: String, tail: String, args: Bits*) = {
         if (param.debug) {
           printf(prefix + fmt + tail, args:_*)
@@ -112,9 +113,9 @@ with HasControlPlaneParameters
       }
 
       /** Single log */
-      def log(fmt: String, args: Bits*) = log_raw(log_prefix, fmt, "\n", timer +: state +: args:_*)
+      def log(fmt: String, args: Bits*) = log_raw(log_prefix, fmt, "\n", bankid.U +: timer +: state +: args:_*)
       /** Log with line continued */
-      def log_part(fmt: String, args: Bits*) = log_raw(log_prefix, fmt, "", timer +: state +: args:_*)
+      def log_part(fmt: String, args: Bits*) = log_raw(log_prefix, fmt, "", bankid.U +: timer +: state +: args:_*)
       /** Log with nothing added */
       def log_plain(fmt: String, args: Bits*) = log_raw("", fmt, "", args:_*)
 
@@ -671,10 +672,10 @@ with HasControlPlaneParameters
 
 object TLSimpleL2Cache
 {
-  def apply()(implicit p: Parameters): TLNode =
+  def apply(bankid: Int)(implicit p: Parameters): TLNode =
   {
     if (p(NL2CacheCapacity) != 0) {
-      val tlsimpleL2cache = LazyModule(new TLSimpleL2Cache(TLL2CacheParams()))
+      val tlsimpleL2cache = LazyModule(new TLSimpleL2Cache(bankid, TLL2CacheParams()))
       tlsimpleL2cache.node
     }
     else {
@@ -686,8 +687,8 @@ object TLSimpleL2Cache
 
 object TLSimpleL2CacheRef
 {
-  def apply()(implicit p: Parameters): TLSimpleL2Cache = {
-    val tlsimpleL2cache = LazyModule(new TLSimpleL2Cache(TLL2CacheParams()))
+  def apply(bankid: Int)(implicit p: Parameters): TLSimpleL2Cache = {
+    val tlsimpleL2cache = LazyModule(new TLSimpleL2Cache(bankid, TLL2CacheParams()))
     tlsimpleL2cache
   }
 }

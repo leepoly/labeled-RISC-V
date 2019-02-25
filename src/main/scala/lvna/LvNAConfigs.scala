@@ -17,9 +17,10 @@ class LvNAConfigemu extends Config(
   ++ new WithNonblockingL1(8)
   ++ new WithNL2CacheCapacity(256)
   ++ new WithNBigCores(2)
+  ++ new WithNBanksPerMemChannel(4)
   ++ new WithEmu
   ++ new WithRationalRocketTiles
-  ++ new WithExtMemSize(0x800000L) // 8MB
+  ++ new WithExtMemSize(0x1000000L) // 16MB
   ++ new WithNoMMIOPort
   ++ new WithJtagDTM
   ++ new WithDebugSBA

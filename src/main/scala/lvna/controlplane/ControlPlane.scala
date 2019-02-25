@@ -250,7 +250,7 @@ trait HasControlPlaneModuleImpl extends HasRocketTilesModuleImp {
 trait BindL2WayMask extends HasRocketTiles {
   this: BaseSubsystem with HasControlPlane with CanHaveMasterAXI4MemPort =>
   val _cp = controlPlane
-  val _l2 = l2cache
+  val _l2 = l2caches(0)
 }
 
 trait BindL2WayMaskModuleImp extends HasRocketTilesModuleImp {
