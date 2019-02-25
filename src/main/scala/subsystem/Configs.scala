@@ -373,4 +373,3 @@ class WithNL2CacheCapacity(kb: Int) extends Config((site, here, up) => {
 class WithNL2CacheWays(ways: Int) extends Config((site, here, up) => {
   case NL2CacheWays => ways
 })
-
