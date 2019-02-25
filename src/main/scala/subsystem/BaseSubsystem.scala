@@ -61,8 +61,11 @@ abstract class BaseSubsystem(implicit p: Parameters) extends BareSubsystem {
   require (isPow2(nBanksPerChannel))
   require (isPow2(memBusBlockBytes))
 
-  val l2caches1 = List.fill(nBanks)(TLSimpleL2Cache)
-  val l2caches = l2caches1.zipWithIndex.map { case(l2cache, bankid) => if (p(NL2CacheCapacity) != 0) TLSimpleL2CacheRef(bankid) else null }
+  //val l2caches1 = List.fill(nBanks)(TLSimpleL2Cache)
+  //val l2caches = l2caches1.zipWithIndex.map { case(l2cache, bankid) => if (p(NL2CacheCapacity) != 0) TLSimpleL2CacheRef(bankid) else null }
+  val l2caches = (0 until nBanks).map { bankid =>
+    if (p(NL2CacheCapacity) != 0) TLSimpleL2CacheRef(bankid) else null 
+  }
   private val l2nodes = l2caches.map( l2cache => l2cache.node)
 
   val memBuses = Seq.tabulate(nMemoryChannels) { channel =>
