@@ -61,10 +61,14 @@ VERILATOR_FLAGS := --top-module $(MODEL) \
   +define+STOP_COND=\$$c\(\"done_reset\"\) --assert \
   --output-split 20000 \
   --output-split-cfuncs 20000 \
+<<<<<<< HEAD
   --threads 2 \
+=======
+>>>>>>> 259363abe3840f0fbc41bc0aa5455ce9f5a0639e
 	-Wno-STMTDLY --x-assign unique \
   -I$(vsrc) \
-  -O3 -CFLAGS "$(CXXFLAGS) -DVERILATOR -DTEST_HARNESS=V$(MODEL) -include $(csrc)/verilator.h -include $(generated_dir)/$(PROJECT).$(CONFIG).plusArgs"
+  --threads 2 \
+  --stats -O3 -CFLAGS "$(CXXFLAGS) -DVERILATOR -DTEST_HARNESS=V$(MODEL) -include $(csrc)/verilator.h -include $(generated_dir)/$(PROJECT).$(CONFIG).plusArgs"
 cppfiles = $(addprefix $(csrc)/, $(addsuffix .cc, $(CXXSRCS)))
 headers = $(wildcard $(csrc)/*.h)
 

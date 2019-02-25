@@ -163,11 +163,12 @@ trait CanHaveMasterAXI4MemPort { this: BaseSubsystem =>
   //no-bank l2cache
   //val l2cache: TLSimpleL2Cache = if (p(NL2CacheCapacity) != 0) TLSimpleL2CacheRef() else null
   //private val l2node = if (p(NL2CacheCapacity) != 0) l2cache.node else TLSimpleL2Cache()
+  //val l2caches: List[TLSimpleL2Cache] = if (p(NL2CacheCapacity) != 0) List.fill(nBanks)(TLSimpleL2CacheRef()) else List.fill(nBanks)(null)
 
   memPortParamsOpt.foreach { params =>
-    memBuses.map { m =>
+    memBuses./*zip(l2nodes).*/map { /*case(m, l2)*/ m =>
        memAXI4Node := m.toDRAMController(Some(portName)) {
-        AXI4Dumper() := AXI4UserYanker() := AXI4IdIndexer(params.idBits) := TLToAXI4()
+        AXI4Dumper() := AXI4UserYanker() := AXI4IdIndexer(params.idBits) := TLToAXI4()// := l2
       }
     }
   }

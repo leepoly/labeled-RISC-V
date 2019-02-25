@@ -6,7 +6,6 @@ import freechips.rocketchip.config.{Config, Field}
 import freechips.rocketchip.subsystem._
 
 case object UseEmu extends Field[Boolean](false)
-case object NohypeDefault extends Field[Boolean](true)
 
 class WithEmu extends Config ((site, here, up) => {
   case UseEmu => true
@@ -44,18 +43,19 @@ class LvNAFPGAConfigzcu102 extends Config(
   ++ new WithNBigCores(4)
   ++ new WithRationalRocketTiles
   ++ new WithTimebase(BigInt(10000000)) // 10 MHz
-  ++ new WithExtMemSize(0x80000000L)
+  ++ new WithExtMemSize(0x100000000L)
   ++ new WithJtagDTM
   ++ new WithDebugSBA
   ++ new BaseFPGAConfig)
 
 class LvNAFPGAConfigsidewinder extends Config(
-  new WithNonblockingL1(8)
+  new WithoutFPU
+  ++ new WithNonblockingL1(8)
   ++ new WithNL2CacheCapacity(2048)
   ++ new WithNBigCores(4)
   ++ new WithRationalRocketTiles
   ++ new WithTimebase(BigInt(10000000)) // 10 MHz
-  ++ new WithExtMemSize(0x80000000L)
+  ++ new WithExtMemSize(0x100000000L)
   ++ new WithJtagDTM
   ++ new WithDebugSBA
   ++ new BaseFPGAConfig)

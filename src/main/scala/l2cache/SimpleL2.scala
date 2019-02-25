@@ -29,7 +29,7 @@ class AXI4SimpleL2Cache(param: L2CacheParams)(implicit p: Parameters) extends La
 
   lazy val module = new LazyModuleImp(this) {
     val nWays = p(NL2CacheWays)
-    val nSets = p(NL2CacheCapacity) * 1024 / 64 / nWays
+    val nSets = p(NL2CacheCapacity) * 1024 / 64 / nWays / p(NBanksPerMemChannel)
     (node.in zip node.out) foreach { case ((in, edgeIn), (out, edgeOut)) =>
       require(isPow2(nSets))
       require(isPow2(nWays))
