@@ -40,7 +40,8 @@ with HasControlPlaneParameters
     println(s"bankid=$bankid")
     val nWays = p(NL2CacheWays)
     println(s"nWays = $nWays")
-    val nSets = p(NL2CacheCapacity) * 1024 / 64 / nWays / p(NBanksPerMemChannel)
+    val nBanks = p(NBanksPerMemChannel)
+    val nSets = p(NL2CacheCapacity) * 1024 / 64 / nWays / nBanks
     println(s"nSets = $nSets")
     val cp = IO(new CPToL2CacheIO().flip())
     (node.in zip node.out) foreach { case ((in, edgeIn), (out, edgeOut)) =>
@@ -79,13 +80,17 @@ with HasControlPlaneParameters
 
       val indexBits = log2Ceil(nSets)
       val blockOffsetBits = log2Ceil(blockBytes)
-      val tagBits = addrWidth - indexBits - blockOffsetBits
+      val bankBits = log2Ceil(nBanks)
+      val tagBits = addrWidth - indexBits - blockOffsetBits - bankBits
       val offsetLSB = 0
       val offsetMSB = blockOffsetBits - 1
-      val indexLSB = offsetMSB + 1
+      val bankLSB = offsetMSB + 1
+      val bankMSB = bankLSB + bankBits - 1
+      val indexLSB = bankMSB + 1
       val indexMSB = indexLSB + indexBits - 1
       val tagLSB = indexMSB + 1
       val tagMSB = tagLSB + tagBits - 1
+      println("tag%d-%d index%d-%d bank%d-%d offset%d-%d", tagMSB, tagLSB, indexMSB, indexLSB, bankMSB, bankLSB, offsetMSB, offsetLSB)
 
       val rst_cnt = RegInit(0.asUInt(log2Up(2 * nSets + 1).W))
       val rst = (rst_cnt < UInt(2 * nSets)) && !reset.toBool
@@ -279,6 +284,7 @@ with HasControlPlaneParameters
       )
 
       val idx = addr(indexMSB, indexLSB)
+      val bank = addr(bankMSB, bankLSB)
 
       val meta_array_wen = rst || state === s_tag_read
       val read_tag_req = (state === s_tag_read_req)
@@ -330,7 +336,7 @@ with HasControlPlaneParameters
       (0 until nWays).foreach(i => when (tag_match_way(i)) { hit_way := Bits(i) })
 
       cp.dsid := dsid
-      val curr_mask = cp.waymask
+      val curr_mask = cp.waymask //0xFFFF.U
       val repl_way = Mux((curr_state_reg & curr_mask).orR, PriorityEncoder(curr_state_reg & curr_mask),
         Mux(curr_mask.orR, PriorityEncoder(curr_mask), UInt(0)))
       val repl_dsid = set_dsids_reg(repl_way)
@@ -347,7 +353,7 @@ with HasControlPlaneParameters
       // valid and dirty
       val need_writeback = vb_rdata_reg(repl_way) && db_rdata_reg(repl_way)
       val writeback_tag = tag_rdata_reg(repl_way)
-      val writeback_addr = Cat(writeback_tag, Cat(idx, 0.U(blockOffsetBits.W)))
+      val writeback_addr = Cat(writeback_tag, Cat(idx, Cat(bank, 0.U(blockOffsetBits.W))))
 
       val read_miss_writeback = read_miss && need_writeback
       val read_miss_no_writeback = read_miss && !need_writeback
@@ -554,7 +560,7 @@ with HasControlPlaneParameters
       // external memory bus width is 32/64/128bits
       // so each memport read/write is mapped into a whole tilelink bus width read/write
       val axi4_size = log2Up(outerBeatBytes).U
-      val mem_addr = Cat(addr(tagMSB, indexLSB), 0.asUInt(blockOffsetBits.W))
+      val mem_addr = Cat(addr(tagMSB, bankLSB), 0.asUInt(blockOffsetBits.W))
 
       val out_raddr_fire = out.a.fire()
       val out_waddr_fire = out.a.fire()

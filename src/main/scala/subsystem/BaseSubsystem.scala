@@ -70,7 +70,7 @@ abstract class BaseSubsystem(implicit p: Parameters) extends BareSubsystem {
     for (bank <- 0 until nBanksPerChannel) {
       ForceFanout(a = true) { implicit p => sbus.toMemoryBus { in } }
       mbus.coupleFrom(s"coherence_manager_bank_$bank") {
-        _ := l2nodes(0) := TLFilter(TLFilter.mSelectIntersect(mbus.bankFilter(bank))) := out
+        _ := l2nodes(bank) := TLFilter(TLFilter.mSelectIntersect(mbus.bankFilter(bank))) := out
       }
     }
     mbus
