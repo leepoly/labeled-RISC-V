@@ -63,7 +63,7 @@ abstract class BaseSubsystem(implicit p: Parameters) extends BareSubsystem {
   val l2caches = (0 until nBanks).map { bankid =>
     if (p(NL2CacheCapacity) != 0) TLSimpleL2CacheRef(bankid) else null 
   }
-  private val l2nodes = l2caches.map( l2cache => l2cache.node)
+  private val l2nodes = l2caches.map( l2cache => if (l2cache == null) null else l2cache.node)
 
   val memBuses = Seq.tabulate(nMemoryChannels) { channel =>
     val mbus = LazyModule(new MemoryBus(mbusParams, channel, nMemoryChannels, nBanks)(p))

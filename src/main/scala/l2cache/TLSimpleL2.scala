@@ -19,6 +19,12 @@ case class TLL2CacheParams(
   debug: Boolean = true //false
 )
 
+trait L2CacheParams1 {
+  val blockSize: Int = 64 * 8
+  val blockBytes: Int = blockSize / 8
+
+}
+
 class MetadataEntry(tagBits: Int, dsidWidth: Int) extends Bundle {
   val valid = Bool()
   val dirty = Bool()
@@ -26,6 +32,195 @@ class MetadataEntry(tagBits: Int, dsidWidth: Int) extends Bundle {
   val rr_state = Bool()
   val dsid = UInt(width = dsidWidth.W)
   override def cloneType = new MetadataEntry(tagBits, dsidWidth).asInstanceOf[this.type]
+}
+
+class L2CacheReq(params: TLBundleParameters, dsidWidth: Int) extends Bundle with L2CacheParams1{
+  val opcode = UInt(OUTPUT, 3.W)
+  val dsid = UInt(OUTPUT, width = dsidWidth.W)
+  val param = UInt(OUTPUT, 0)
+  val size = UInt(OUTPUT, width = log2Up(log2Ceil(params.dataBits / 8) + log2Ceil(64 * 8 / params.dataBits)).W)
+  val source = UInt(OUTPUT, width = params.sourceBits.W)
+  val address = UInt(OUTPUT, width = params.addressBits.W)
+  val mask = UInt(OUTPUT, 16.W)
+  val data = Vec(blockSize / params.dataBits, UInt(OUTPUT, params.dataBits.W))
+}
+
+class L2CacheStageInfo(params: TLBundleParameters, dsidWidth: Int) extends Bundle with L2CacheParams1{
+  val req = new L2CacheReq(params, dsidWidth)
+  val valid = Bool(OUTPUT)
+  val ready = Bool(INPUT)
+}
+
+class TL2Cache(params: TLBundleParameters, dsidWidth: Int) extends Module with L2CacheParams1{
+  val io = new Bundle {
+    val in = new TLBundleSnoop(params)
+    val out = new L2CacheStageInfo(params, dsidWidth)
+    val cache_rst = Bool(INPUT)
+  }
+  val s_idle :: s_gather_write_data :: s_send_bresp :: s_wait_cache_ready :: Nil = Enum(UInt(), 4)
+  val state = Reg(init = s_idle)
+
+  val in_opcode = io.in.a.bits.opcode
+  val in_dsid = io.in.a.bits.dsid
+  val in_addr = io.in.a.bits.address
+  val in_id   = io.in.a.bits.source
+  val in_len_shift = io.in.a.bits.size >= innerBeatBits.U
+  val in_len  = Mux(in_len_shift, ((1.U << in.a.bits.size) >> innerBeatBits) - 1.U, 0.U)  // #word, i.e., arlen in AXI
+  val in_data = io.in.a.bits.data
+  val in_data_mask = io.in.a.bits.mask
+
+  val in_recv_fire = io.in.a.fire()
+  val in_read_req = in_recv_fire && (in_opcode === TLMessages.Get)
+  val in_write_req = in_recv_fire && (in_opcode === TLMessages.PutFullData || in_opcode === TLMessages.PutPartialData)
+  val in_recv_handshake = in.a.ready
+
+  val start_beat = in_addr(innerBeatMSB, innerBeatLSB)
+  val inner_end_beat_reg = Reg(UInt(4.W))
+  val inner_end_beat = Mux(state === s_idle, start_beat + in_len, inner_end_beat_reg)
+  val gather_curr_beat_reg = RegInit(0.asUInt(log2Ceil(innerDataBeats).W))
+  val gather_curr_beat = Mux(state === s_idle, start_beat, gather_curr_beat_reg)
+  val gather_last_beat = gather_curr_beat === inner_end_beat
+
+  //cache only sees 64B per cycle
+  val innerBeatSize = io.in.d.bits.params.dataBits
+  val innerBeatBytes = innerBeatSize / 8
+  val innerDataBeats = blockSize / innerBeatSize
+  val innerBeatBits = log2Ceil(innerBeatBytes)
+  val innerBeatIndexBits = log2Ceil(innerDataBeats)
+  val innerBeatLSB = innerBeatBits
+  val innerBeatMSB = innerBeatLSB + innerBeatIndexBits - 1
+
+  val outerBeatSize = 64 * 8//io.out.d.bits.params.dataBits
+  val outerBeatBytes = outerBeatSize / 8
+  val outerDataBeats = blockSize / outerBeatSize
+  //val outerBeatLen = log2Ceil(outerBeatBytes)
+  //val outerBurstLen = outerBeatLen + log2Ceil(outerDataBeats)
+  val addrWidth = io.in.a.bits.params.addressBits
+  val innerIdWidth = io.in.a.bits.params.sourceBits
+  //val outerIdWidth = out.a.bits.params.sourceBits
+  //val split = innerBeatSize / outerBeatSize
+  //val splitBits = log2Ceil(split)
+  //require(isPow2(split))
+
+  val addr = Reg(UInt(addrWidth.W))
+  val id = Reg(UInt(innerIdWidth.W))
+  val opcode = Reg(UInt(3.W))
+  val dsid = RegInit(((1 << dsidWidth) - 1).U(dsidWidth.W))
+  val size_reg = Reg(UInt(width=io.in.a.bits.params.sizeBits))
+  
+  val ren = RegInit(N)
+  val wen = RegInit(N)
+
+  when (state === s_idle) {
+    when (in_read_req) {
+      ren := Y
+      wen := N
+
+      addr := in_addr
+      id := in_id
+      opcode := in_opcode
+      dsid := in_dsid
+      size_reg := in.a.bits.size
+
+      /*merge_curr_beat := start_beat
+      resp_curr_beat := start_beat*/
+      inner_end_beat_reg := start_beat + in_len
+
+      state := s_wait_cache_ready
+      io.out.valid := Y
+    } .elsewhen (in_write_req) {
+      ren := N
+      wen := Y
+      addr := in_addr
+      id := in_id
+      opcode := in_opcode
+      dsid := in_dsid
+      size_reg := in.a.bits.size
+
+      /*merge_curr_beat := start_beat
+      resp_curr_beat := start_beat*/
+      inner_end_beat_reg := start_beat + in_len
+
+      state := s_gather_write_data
+    } .elsewhen (in.b.fire() || in.c.fire() || in.e.fire()) {
+      assert(N, "Inner tilelink Unexpected handshake")
+    }
+  }
+
+  val raddr_recv_ready = state === s_idle && !cache_rst
+  val waddr_recv_ready = state === s_idle && !cache_rst
+
+  // s_gather_write_data:
+  // gather write data
+  val put_data_buf = Reg(Vec(outerDataBeats, UInt(outerBeatSize.W)))
+  val put_data_mask = Reg(init=Vec.fill(outerDataBeats)(Fill(outerBeatBytes, 0.U)))
+  val wdata_recv_ready = state === s_gather_write_data
+  // when (state === s_gather_write_data && in_write_req) {
+  // tilelink receives the first data beat when address handshake
+  // which is different with axi
+  when (in_write_req || (state === s_gather_write_data && in_recv_fire)) {
+    when (state === s_idle) {
+      gather_curr_beat_reg := start_beat + 1.U
+    } .elsewhen (state === s_gather_write_data) {
+      gather_curr_beat_reg := gather_curr_beat_reg + 1.U
+    } .otherwise {
+      assert(N, "state error")
+    }
+
+    put_data_buf(gather_curr_beat) := in_data(outerBeatSize - 1, 0)
+    put_data_mask(gather_curr_beat) := in_data_mask(outerBeatBytes - 1, 0)
+    when (gather_last_beat) {
+      state := s_send_bresp
+    }
+  }
+
+  // in_recv_handshake := raddr_recv_ready || waddr_recv_ready || wdata_recv_ready
+  // val raddr_fire = raddr_recv_ready && in_recv_fire
+  // val waddr_fire = waddr_recv_ready && in_recv_fire
+  // val wdata_fire = wdata_recv_ready && in_recv_fire
+
+  // s_send_bresp:
+  // send bresp, end write transaction
+  val in_write_ok = state === s_send_bresp
+  val in_send_ok = io.in.d.fire()
+
+  when (state === s_send_bresp && in_send_ok) {
+    state := s_wait_cache_ready
+    io.out.valid := Y
+  }
+  //TODO: input queue could be added here, for non-blocking
+
+  when (state === s_wait_cache_ready && io.out.ready) {
+    state := s_idle
+  }
+
+  val resp_data = Wire(Vec(split, UInt(outerBeatSize.W)))
+  for (i <- 0 until split) {
+    resp_data(i) := data_buf((resp_curr_beat << splitBits) + i.U)
+  }
+
+}
+
+class Cache2TL(params: TLBundleParameters, dsidWidth: Int) extends Module with L2CacheParams1{
+  val io = new Bundle {
+    val in = new L2CacheStageInfo(params, dsidWidth)
+    val out = new TLBundleSnoop(params)
+  }
+  val s_idle :: s_data_resp :: Nil = Enum(UInt(), 2)
+  val state = s_idle
+
+  val in_read_ok = state === s_data_resp
+
+  io.out.d.valid := in_write_ok || in_read_ok
+  io.out.d.bits.opcode  := Mux(in_read_ok, TLMessages.AccessAckData, TLMessages.AccessAck)
+  io.out.d.bits.param   := UInt(0)
+  io.out.d.bits.size    := size_reg
+  io.out.d.bits.source  := id
+  io.out.d.bits.sink    := UInt(0)
+  io.out.d.bits.denied  := Bool(false)
+  io.out.d.bits.data    := resp_data(resp_curr_beat)
+  io.out.d.bits.corrupt := Bool(false)
+  // edgeIn.AccessAck(id, size_reg, resp_data(resp_curr_beat))
 }
 
 // ============================== DCache ==============================
@@ -54,29 +249,10 @@ with HasControlPlaneParameters
 
       val blockSize = 64 * 8
       val blockBytes = blockSize / 8
-      val innerBeatSize = in.d.bits.params.dataBits
-      val innerBeatBytes = innerBeatSize / 8
-      val innerDataBeats = blockSize / innerBeatSize
-      val innerBeatBits = log2Ceil(innerBeatBytes)
-      val innerBeatIndexBits = log2Ceil(innerDataBeats)
-      val innerBeatLSB = innerBeatBits
-      val innerBeatMSB = innerBeatLSB + innerBeatIndexBits - 1
-
-      val outerBeatSize = out.d.bits.params.dataBits
-      val outerBeatBytes = outerBeatSize / 8
-      val outerDataBeats = blockSize / outerBeatSize
-      val outerBeatLen = log2Ceil(outerBeatBytes)
-      val outerBurstLen = outerBeatLen + log2Ceil(outerDataBeats)
-      val addrWidth = in.a.bits.params.addressBits
-      val innerIdWidth = in.a.bits.params.sourceBits
-      val outerIdWidth = out.a.bits.params.sourceBits
 
       // to keep L1 miss & L2 hit penalty small, inner axi bus width should be as large as possible
       // on loongson and zedboard, outer axi bus width are usually 32bit
       // so we require that innerBeatSize to be multiples of outerBeatSize
-      val split = innerBeatSize / outerBeatSize
-      val splitBits = log2Ceil(split)
-      require(isPow2(split))
 
       val indexBits = log2Ceil(nSets)
       val blockOffsetBits = log2Ceil(blockBytes)
@@ -90,7 +266,7 @@ with HasControlPlaneParameters
       val indexMSB = indexLSB + indexBits - 1
       val tagLSB = indexMSB + 1
       val tagMSB = tagLSB + tagBits - 1
-      println("tag%d-%d index%d-%d bank%d-%d offset%d-%d", tagMSB, tagLSB, indexMSB, indexLSB, bankMSB, bankLSB, offsetMSB, offsetLSB)
+      println(s"tag$tagMSB-$tagLSB index$indexMSB-$indexLSB bank$bankMSB-$bankLSB offset$offsetMSB-$offsetLSB")
 
       val rst_cnt = RegInit(0.asUInt(log2Up(2 * nSets + 1).W))
       val rst = (rst_cnt < UInt(2 * nSets)) && !reset.toBool
@@ -110,7 +286,7 @@ with HasControlPlaneParameters
       // write miss writeback : s_idle -> s_gather_write_data ->  s_send_bresp -> s_tag_read -> s_data_read -> s_wait_ram_awready -> s_do_ram_write -> s_wait_ram_bresp
       //                               -> s_wait_ram_arready -> s_do_ram_read -> s_merge_put_data -> s_data_write -> s_update_meta -> s_idle
       val timer = GTimer()
-      val log_prefix = "bankid: %d cycle: %d [L2Cache] state %x "
+      val log_prefix = "cycle: %d bankid: %d [L2Cache] state %x "
       def log_raw(prefix: String, fmt: String, tail: String, args: Bits*) = {
         if (param.debug) {
           printf(prefix + fmt + tail, args:_*)
@@ -118,9 +294,9 @@ with HasControlPlaneParameters
       }
 
       /** Single log */
-      def log(fmt: String, args: Bits*) = log_raw(log_prefix, fmt, "\n", bankid.U +: timer +: state +: args:_*)
+      def log(fmt: String, args: Bits*) = log_raw(log_prefix, fmt, "\n", timer +: bankid.U +: state +: args:_*)
       /** Log with line continued */
-      def log_part(fmt: String, args: Bits*) = log_raw(log_prefix, fmt, "", bankid.U +: timer +: state +: args:_*)
+      def log_part(fmt: String, args: Bits*) = log_raw(log_prefix, fmt, "", timer +: bankid.U +: state +: args:_*)
       /** Log with nothing added */
       def log_plain(fmt: String, args: Bits*) = log_raw("", fmt, "", args:_*)
 
@@ -148,40 +324,9 @@ with HasControlPlaneParameters
           out.a.bits.data)
       }
 
+      //val in_send_id = in.d.bits.source
+      //val in_send_opcode = in.d.bits.opcode
 
-      val in_opcode = in.a.bits.opcode
-      val in_dsid = in.a.bits.dsid
-      val in_addr = in.a.bits.address
-      val in_id   = in.a.bits.source
-      val in_len_shift = in.a.bits.size >= innerBeatBits.U
-      val in_len  = Mux(in_len_shift, ((1.U << in.a.bits.size) >> innerBeatBits) - 1.U, 0.U)  // #word, i.e., arlen in AXI
-      val in_data = in.a.bits.data
-      val in_data_mask = in.a.bits.mask
-
-      val in_recv_fire = in.a.fire()
-      val in_read_req = in_recv_fire && (in_opcode === TLMessages.Get)
-      val in_write_req = in_recv_fire && (in_opcode === TLMessages.PutFullData || in_opcode === TLMessages.PutPartialData)
-      val in_recv_handshake = in.a.ready
-
-      val in_send_ok = in.d.fire()
-      val in_send_id = in.d.bits.source
-      val in_send_opcode = in.d.bits.opcode
-
-      val addr = Reg(UInt(addrWidth.W))
-      val id = Reg(UInt(innerIdWidth.W))
-      val opcode = Reg(UInt(3.W))
-      val dsid = RegInit(((1 << dsidWidth) - 1).U(dsidWidth.W))
-      val size_reg = Reg(UInt(width=in.a.bits.params.sizeBits))
-      
-      val ren = RegInit(N)
-      val wen = RegInit(N)
-
-      val start_beat = in_addr(innerBeatMSB, innerBeatLSB)
-      val inner_end_beat_reg = Reg(UInt(4.W))
-      val inner_end_beat = Mux(state === s_idle, start_beat + in_len, inner_end_beat_reg)
-      val gather_curr_beat_reg = RegInit(0.asUInt(log2Ceil(innerDataBeats).W))
-      val gather_curr_beat = Mux(state === s_idle, start_beat, gather_curr_beat_reg)
-      val gather_last_beat = gather_curr_beat === inner_end_beat
       val merge_curr_beat = RegInit(0.asUInt(log2Ceil(innerDataBeats).W))
       val merge_last_beat = merge_curr_beat === inner_end_beat
       val resp_curr_beat = RegInit(0.asUInt(log2Ceil(innerDataBeats).W))
@@ -191,83 +336,22 @@ with HasControlPlaneParameters
       // s_idle: idle state
       // capture requests
       // CheckOneHot(Seq(in.ar.fire(), in.aw.fire(), in.r.fire(), in.w.fire(), in.b.fire()))
-      when (state === s_idle) {
-        when (in_read_req) {
-          ren := Y
-          wen := N
+      //LYW
+      val s1_in = new L2CacheStageInfo(edgeIn.bundle, dsidWidth)
+      val TL2CacheInput = new TL2Cache(edgeIn.bundle, dsidWidth)
+      val s1_ready = Reg(init = Bool(false))
+      when (!rst) 
+        s1_ready := Bool(true)
+      val s1_valid = Reg(init = Bool(false))
 
-          addr := in_addr
-          id := in_id
-          opcode := in_opcode
-          dsid := in_dsid
-          size_reg := in.a.bits.size
-
-          // gather_curr_beat_reg := start_beat
-          merge_curr_beat := start_beat
-          resp_curr_beat := start_beat
-          inner_end_beat_reg := start_beat + in_len
-
-          state := s_tag_read_req
-        } .elsewhen (in_write_req) {
-          ren := N
-          wen := Y
-          addr := in_addr
-          id := in_id
-          opcode := in_opcode
-          dsid := in_dsid
-          size_reg := in.a.bits.size
-
-          // gather_curr_beat_reg := start_beat
-          merge_curr_beat := start_beat
-          resp_curr_beat := start_beat
-          inner_end_beat_reg := start_beat + in_len
-
-          state := s_gather_write_data
-        } .elsewhen (in.b.fire() || in.c.fire() || in.e.fire()) {
-          assert(N, "Inner tilelink Unexpected handshake")
-        }
-      }
-
-      val raddr_recv_ready = state === s_idle && !rst
-      val waddr_recv_ready = state === s_idle && !rst
-
-      // s_gather_write_data:
-      // gather write data
-      val put_data_buf = Reg(Vec(outerDataBeats, UInt(outerBeatSize.W)))
-      val put_data_mask = Reg(init=Vec.fill(outerDataBeats)(Fill(outerBeatBytes, 0.U)))
-      val wdata_recv_ready = state === s_gather_write_data
-      // when (state === s_gather_write_data && in_write_req) {
-      // tilelink receives the first data beat when address handshake
-      // which is different with axi
-      when (in_write_req || (state === s_gather_write_data && in_recv_fire)) {
-        when (state === s_idle) {
-          gather_curr_beat_reg := start_beat + 1.U
-        } .elsewhen (state === s_gather_write_data) {
-          gather_curr_beat_reg := gather_curr_beat_reg + 1.U
-        } .otherwise {
-          assert(N, "state error")
-        }
-
-        for (i <- 0 until split) {
-          put_data_buf((gather_curr_beat << splitBits) + i.U) := in_data(outerBeatSize * (i + 1) - 1, outerBeatSize * i)
-          put_data_mask((gather_curr_beat << splitBits) + i.U) := in_data_mask(outerBeatBytes * (i + 1) - 1, outerBeatBytes * i)
-        }
-        when (gather_last_beat) {
-          state := s_send_bresp
-        }
-      }
-
-      in_recv_handshake := raddr_recv_ready || waddr_recv_ready || wdata_recv_ready
-      val raddr_fire = raddr_recv_ready && in_recv_fire
-      val waddr_fire = waddr_recv_ready && in_recv_fire
-      val wdata_fire = wdata_recv_ready && in_recv_fire
-
-      // s_send_bresp:
-      // send bresp, end write transaction
-      val in_write_ok = state === s_send_bresp
-
-      when (state === s_send_bresp && in_send_ok) {
-        state := s_tag_read_req
+      TL2CacheInput.io.in <> in
+      TL2CacheInput.io.out.req <> s1_in
+      TL2CacheInput.io.cache_rst = rst
+      TL2CacheInput.io.out.ready = s1_ready
+      when (s1_in.valid) {
+        //无脑读tag
+        state := s_tag_read_resp
+        
       }
 
       // s_tag_read: inspecting meta data
@@ -282,6 +366,7 @@ with HasControlPlaneParameters
         size = nSets,
         data = Vec(nWays, new MetadataEntry(tagBits, dsidWidth))
       )
+
 
       val idx = addr(indexMSB, indexLSB)
       val bank = addr(bankMSB, bankLSB)
@@ -298,9 +383,9 @@ with HasControlPlaneParameters
       val curr_state = wayMap((w: Int) => meta_rdata(w).rr_state).asUInt
       val set_dsids = wayMap((w: Int) => meta_rdata(w).dsid)
 
-      when (state === s_tag_read_req) {
-        state := s_tag_read_resp
-      }
+      // when (state === s_tag_read_req) {
+      //   state := s_tag_read_resp
+      // }
 
       // tag, valid, dirty response
       val vb_rdata_reg = Reg(Bits(width = nWays.W))
@@ -644,24 +729,6 @@ with HasControlPlaneParameters
           state := s_idle
         }
       }
-
-      val resp_data = Wire(Vec(split, UInt(outerBeatSize.W)))
-      for (i <- 0 until split) {
-        resp_data(i) := data_buf((resp_curr_beat << splitBits) + i.U)
-      }
-      
-      val in_read_ok = state === s_data_resp
-
-      in.d.valid := in_write_ok || in_read_ok
-      in.d.bits.opcode  := Mux(in_read_ok, TLMessages.AccessAckData, TLMessages.AccessAck)
-      in.d.bits.param   := UInt(0)
-      in.d.bits.size    := size_reg
-      in.d.bits.source  := id
-      in.d.bits.sink    := UInt(0)
-      in.d.bits.denied  := Bool(false)
-      in.d.bits.data    := resp_data(resp_curr_beat)
-      in.d.bits.corrupt := Bool(false)
-      // edgeIn.AccessAck(id, size_reg, resp_data(resp_curr_beat))
 
       if (edgeOut.manager.anySupportAcquireB && edgeOut.client.anySupportProbe) {
         in.b <> out.b
