@@ -49,7 +49,7 @@ class ControlPlaneIO(implicit val p: Parameters) extends Bundle with HasControlP
   val hartSelWen   = Bool(INPUT)
   val dsidSel      = UInt(OUTPUT, dsidWidth)
   val dsidSelWen   = Bool(INPUT)
-  val progHartId   = UInt(OUTPUT, log2Ceil(nTiles))
+  val progHartId   = UInt(OUTPUT, log2Up(nTiles))
   val progHartIdWen = Bool(INPUT)
 }
 
@@ -136,7 +136,7 @@ class ControlPlane()(implicit p: Parameters) extends LazyModule
       val cp        = new ControlPlaneIO()
       val mem_part_en = Bool().asInput
       val distinct_hart_dsid_en = Bool().asInput
-      val progHartIds = Vec(nTiles, UInt(log2Ceil(nTiles).W)).asOutput
+      val progHartIds = Vec(nTiles, UInt(log2Up(nTiles).W)).asOutput
     })
 
     val hartSel   = RegInit(0.U(ldomDSidWidth.W))
@@ -152,7 +152,7 @@ class ControlPlane()(implicit p: Parameters) extends LazyModule
     /**
       * Programmable hartid.
       */
-    val progHartIds = RegInit(Vec(Seq.fill(nTiles){ 0.U(log2Ceil(nTiles).W) }))
+    val progHartIds = RegInit(Vec(Seq.fill(nTiles){ 0.U(log2Up(nTiles).W) }))
     io.progHartIds := progHartIds
     val l2dsid_reg = RegNext(io.l2.dsid)  // 1 cycle delay
     io.l2.waymask := waymasks(l2dsid_reg)
