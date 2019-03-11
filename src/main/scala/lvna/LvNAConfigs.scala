@@ -16,6 +16,7 @@ class LvNAConfigemu extends Config(
   new WithoutFPU
   ++ new WithNonblockingL1(8)
   ++ new WithNL2CacheCapacity(256)
+  //++ new WithNBanksPerMemChannel(4)
   ++ new WithNBigCores(1)
   ++ new WithEmu
   ++ new WithRationalRocketTiles
@@ -29,6 +30,7 @@ class LvNAFPGAConfigzedboard extends Config(
   new WithoutFPU
   ++ new WithNonblockingL1(8)
   ++ new WithNL2CacheCapacity(256)
+  ++ new WithNBanksPerMemChannel(4)
   ++ new WithNZedboardCores(2)
   ++ new WithTimebase(BigInt(20000000)) // 20 MHz
   ++ new WithExtMemSize(0x100000000L)
@@ -39,6 +41,7 @@ class LvNAFPGAConfigzedboard extends Config(
 class LvNAFPGAConfigzcu102 extends Config(
   new WithoutFPU
   ++ new WithNonblockingL1(8)
+  ++ new WithNBanksPerMemChannel(4)
   ++ new WithNL2CacheCapacity(2048)
   ++ new WithNBigCores(4)
   ++ new WithRationalRocketTiles

@@ -24,6 +24,7 @@ class TestHarness()(implicit p: Parameters) extends Module {
   dut.reset := reset | dut.debug.ndreset
   dut.corerst := dut.reset
   dut.coreclk := dut.clock
+  dut.mem_part_en := true.B
 
   dut.dontTouchPorts()
   dut.tieOffInterrupts()
