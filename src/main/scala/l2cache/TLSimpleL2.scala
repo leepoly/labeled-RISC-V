@@ -74,8 +74,9 @@ class TLCacheConvertorIn(params: TLBundleParameters, dsidWidth: Int) extends Mod
     val cache_rst = Bool(INPUT)
     val cache_s3 = new L2CacheStageInfo(params, dsidWidth).flip
   }
-  val s0_idle :: s0_gather_write_data :: s0_send_bresp :: s0_wait_cache_ready :: s0_wait_cache_ready1 :: Nil = Enum(UInt(), 5)
+  val s0_idle :: s0_gather_write_data :: s0_send_bresp :: s0_wait_cache_ready :: Nil = Enum(UInt(), 4)
   val s0_state = Reg(init = s0_idle)
+  val convertor_debug = Bool(false)
 
   //cache only sees 64B per cycle
   val innerBeatSize = io.tl_in_d.bits.params.dataBits
@@ -119,6 +120,10 @@ class TLCacheConvertorIn(params: TLBundleParameters, dsidWidth: Int) extends Mod
 
   val s0_info = Reg(new L2CacheReq(params, dsidWidth))
   val s0_valid = Wire(init = Bool(false))
+
+  val s3_idle :: s3_data_resp :: Nil = Enum(UInt(), 2)
+  val s3_state = Reg(init = s3_idle)
+
   io.cache_s0.req := s0_info
   io.cache_s0.valid := s0_valid
 
@@ -146,22 +151,27 @@ class TLCacheConvertorIn(params: TLBundleParameters, dsidWidth: Int) extends Mod
     }
   }
 
-  val raddr_recv_ready = s0_state === s0_idle && !io.cache_rst
-  val waddr_recv_ready = s0_state === s0_idle && !io.cache_rst
-
-  /*printf("cycle: %d address %x address1 %x address2 %x opcode %x s0_state %x cache_s0.valid %d a_ready%d a_valid%d in_read_req%d cache_rst%d raddr_recv_ready%d\n", 
-    GTimer(),
-    io.tl_in_a.bits.address, s0_info.address, io.cache_s0.req.address, 
-    io.tl_in_a.bits.opcode, s0_state, s0_valid, 
-    io.tl_in_a_ready, io.tl_in_a_valid, in_read_req, 
-    io.cache_rst, raddr_recv_ready)*/
+  when (convertor_debug) {
+    when (s0_state =/= s0_idle) {
+      printf("[in.a] cycle: %d a_addr %x in_write%x a_opcode%x s0_state%x cache_s0.valid%x cache_s0.ready%x a_ready%x a_valid%x a_source%x\n", 
+        GTimer(), io.tl_in_a.bits.address,
+        in_write_req,
+        io.tl_in_a.bits.opcode, s0_state, io.cache_s0.valid, io.cache_s0.ready,
+        io.tl_in_a_ready, io.tl_in_a_valid, 
+        io.tl_in_a.bits.source
+        )
+    }
+  }
+  
+  
 
   // *** gather_wdata ***
   // s_gather_write_data:
   // gather write data
   val put_data_buf = Reg(Vec(8, UInt(64.W)))
   val put_data_mask = Reg(init=Vec.fill(8)(Fill(outerBeatBytes, 0.U)))
-  val wdata_recv_ready = s0_state === s0_gather_write_data
+
+  
   when (in_write_req || (s0_state === s0_gather_write_data && in_recv_fire)) {
     when (s0_state === s0_idle) {
       gather_curr_beat_reg := s0_start_beat + 1.U
@@ -180,11 +190,6 @@ class TLCacheConvertorIn(params: TLBundleParameters, dsidWidth: Int) extends Mod
   s0_info.data := put_data_buf
   s0_info.mask := put_data_mask
 
-  io.tl_in_a_ready := raddr_recv_ready || waddr_recv_ready || wdata_recv_ready
-  val raddr_fire = raddr_recv_ready && in_recv_fire
-  val waddr_fire = waddr_recv_ready && in_recv_fire
-  val wdata_fire = wdata_recv_ready && in_recv_fire
-
   // s_send_bresp:
   // send bresp, end write transaction
   val in_write_ok = s0_state === s0_send_bresp
@@ -195,11 +200,11 @@ class TLCacheConvertorIn(params: TLBundleParameters, dsidWidth: Int) extends Mod
   }
   //TODO: input queue could be added here, for non-blocking
 
-  when (s0_state === s0_wait_cache_ready) {
-    s0_state := s0_wait_cache_ready1
-  }
+  // when (s0_state === s0_wait_cache_ready) {
+  //   s0_state := s0_wait_cache_ready1
+  // }
 
-  when (s0_state === s0_wait_cache_ready1) {
+  when (s0_state === s0_wait_cache_ready && s3_state === s3_idle) { //won't give req to cache until resp finished
     s0_valid := Bool(true)
     when (io.cache_s0.ready) {
       s0_state := s0_idle
@@ -207,8 +212,6 @@ class TLCacheConvertorIn(params: TLBundleParameters, dsidWidth: Int) extends Mod
   }
 
   // *** data resp ***
-  val s3_idle :: s3_data_resp :: Nil = Enum(UInt(), 2)
-  val s3_state = Reg(init = s3_idle)
 
   val s3_in_addr = io.cache_s3.req.address
   val s3_start_beat = s3_in_addr(innerBeatMSB, innerBeatLSB)
@@ -238,19 +241,31 @@ class TLCacheConvertorIn(params: TLBundleParameters, dsidWidth: Int) extends Mod
   io.tl_in_d_valid := in_write_ok || in_read_ok
   io.tl_in_d.bits.opcode  := Mux(in_read_ok, TLMessages.AccessAckData, TLMessages.AccessAck)
   io.tl_in_d.bits.param   := UInt(0)
-  io.tl_in_d.bits.size    := io.cache_s3.req.size
-  io.tl_in_d.bits.source  := io.cache_s3.req.source
+  io.tl_in_d.bits.size    := Mux(in_read_ok, io.cache_s3.req.size, s0_info.size)
+  io.tl_in_d.bits.source  := Mux(in_read_ok, io.cache_s3.req.source, s0_info.source)
   io.tl_in_d.bits.sink    := UInt(0)
   io.tl_in_d.bits.denied  := Bool(false)
   io.tl_in_d.bits.data    := data_resp
   io.tl_in_d.bits.corrupt := Bool(false)
-  /*printf("[in.d] cycle: %d d_opcode%x s3_state%x cache_s3.valid%d d_ready%d d_valid%d d_source%d resp_curr_beat%d d_data %x\n", 
-    GTimer(),
-    io.tl_in_d.bits.opcode, s3_state, io.cache_s3.valid, 
-    io.tl_in_d_ready, io.tl_in_d_valid, 
-    io.tl_in_d.bits.source,
-    resp_last_beat, data_resp
-    )*/
+  when (convertor_debug) {
+    when ((s3_state =/= s3_idle)) {
+      printf("[in.d] cycle: %d d_opcode%x s3_state%x cache_s3.valid%x d_ready%x d_valid%x d_source%x resp_curr_beat%x d_data %x\n", 
+        GTimer(),
+        io.tl_in_d.bits.opcode, s3_state, io.cache_s3.valid, 
+        io.tl_in_d_ready, io.tl_in_d_valid, 
+        io.tl_in_d.bits.source,
+        resp_last_beat, data_resp
+        )
+    }
+  }
+
+  val raddr_recv_ready = s0_state === s0_idle && !io.cache_rst && s3_state === s3_idle
+  val waddr_recv_ready = s0_state === s0_idle && !io.cache_rst && s3_state === s3_idle
+  val wdata_recv_ready = s0_state === s0_gather_write_data
+  io.tl_in_a_ready := raddr_recv_ready || waddr_recv_ready || wdata_recv_ready
+  val raddr_fire = raddr_recv_ready && in_recv_fire
+  val waddr_fire = waddr_recv_ready && in_recv_fire
+  val wdata_fire = wdata_recv_ready && in_recv_fire
 }
 
 // ============================== DCache ==============================
@@ -373,15 +388,16 @@ with HasControlPlaneParameters
       // capture requests
       // CheckOneHot(Seq(in.ar.fire(), in.aw.fire(), in.r.fire(), in.w.fire(), in.b.fire()))
       //LYW
+
       val s1_in = Reg(new L2CacheReq(edgeIn.bundle, dsidWidth))
       val TL2CacheInput = Module(new TLCacheConvertorIn(edgeIn.bundle, dsidWidth))
 
-      val addr = Reg(UInt(addrWidth.W))
-      val id = Reg(UInt(innerIdWidth.W))
-      val opcode = Reg(UInt(3.W))
-      val dsid = RegInit(((1 << dsidWidth) - 1).U(dsidWidth.W))
-      val ren = RegInit(N)
-      val wen = RegInit(N)
+      val addr = s1_in.address
+      val id = s1_in.source
+      val opcode = s1_in.opcode
+      val dsid = s1_in.dsid
+      val ren = s1_in.opcode === TLMessages.Get
+      val wen = s1_in.opcode === TLMessages.PutFullData || s1_in.opcode === TLMessages.PutPartialData
 
       val start_beat = s1_in.address(innerBeatMSB, innerBeatLSB)
       val inner_end_beat_reg = Reg(UInt(4.W))
@@ -400,7 +416,6 @@ with HasControlPlaneParameters
 
       val s1_ready = !rst && state === s_idle //Not any pipeline so far!
       val s1_valid = TL2CacheInput.io.cache_s0.valid
-      s1_in := TL2CacheInput.io.cache_s0.req
       TL2CacheInput.io.cache_rst := rst
       TL2CacheInput.io.cache_s0.ready := s1_ready
       val s1_wdata_mask = Reg(Vec(outerDataBeats, UInt(8.W)))
@@ -411,30 +426,29 @@ with HasControlPlaneParameters
         ((~full_wmask & old_data) | (full_wmask & new_data))
       }
       when (s1_valid && s1_ready) {
+        s1_in := TL2CacheInput.io.cache_s0.req
         state := s_tag_read_req
-        addr := s1_in.address
-        id := s1_in.source
-        opcode := s1_in.opcode
-        dsid := s1_in.dsid
         inner_end_beat_reg := start_beat + in_len
-        ren := s1_in.opcode === TLMessages.Get
-        wen := s1_in.opcode === TLMessages.PutFullData || s1_in.opcode === TLMessages.PutPartialData
 
         s1_wdata := s1_in.data
         s1_wdata_mask := s1_in.mask
       }
 
+      val s3_valid = Wire(init = Bool(false))
+      val s3_ready = TL2CacheInput.io.cache_s3.ready
       when (s1_ready && s1_valid) {
-        log("[in.a] opcode %x, dsid %x, size %x, source %x, address %x, mask %x, data %x, startbeat%x endbeat%x",
-          s1_in.opcode,
-          s1_in.dsid,
-          s1_in.size,
-          s1_in.source,
-          s1_in.address,
-          s1_in.mask.asUInt,
-          s1_in.data.asUInt,
-          start_beat,
-          inner_end_beat_reg
+        log("opcode %x, dsid %x, size %x, source %x, address %x, mask %x, data %x, ren%x, s1_valid%x s1_ready%x s3_valid%x s3_ready%x",
+          TL2CacheInput.io.cache_s0.req.opcode,
+          TL2CacheInput.io.cache_s0.req.dsid,
+          TL2CacheInput.io.cache_s0.req.size,
+          TL2CacheInput.io.cache_s0.req.source,
+          TL2CacheInput.io.cache_s0.req.address,
+          TL2CacheInput.io.cache_s0.req.mask.asUInt,
+          TL2CacheInput.io.cache_s0.req.data.asUInt,
+          ren,
+          s1_valid,
+          s1_ready,
+          s3_valid, s3_ready
           )
       }
 
@@ -503,16 +517,18 @@ with HasControlPlaneParameters
       hit_way := Bits(0)
       (0 until nWays).foreach(i => when (tag_match_way(i)) { hit_way := Bits(i) })
 
-      cp.dsid := dsid
+
+
+      cp.dsid := s1_in.dsid
       val curr_mask = cp.waymask //0xFFFF.U
       val repl_way = Mux((curr_state_reg & curr_mask).orR, PriorityEncoder(curr_state_reg & curr_mask),
         Mux(curr_mask.orR, PriorityEncoder(curr_mask), UInt(0)))
       val repl_dsid = set_dsids_reg(repl_way)
       val dsid_occupacy = RegInit(Vec(Seq.fill(1 << dsidWidth){ 0.U(log2Ceil(p(NL2CacheCapacity) * 1024 / blockBytes).W) }))
-      val requester_occupacy = dsid_occupacy(dsid)
+      val requester_occupacy = dsid_occupacy(s1_in.dsid)
       val victim_occupacy = dsid_occupacy(repl_dsid)
       when (state === s_tag_read) {
-        log("req_dsid %d occ %d repl_dsid %d occ %d way %d", dsid, requester_occupacy, repl_dsid, victim_occupacy, repl_way)
+        log("req_dsid %d occ %d repl_dsid %d occ %d way %d", s1_in.dsid, requester_occupacy, repl_dsid, victim_occupacy, repl_way)
       }
 
       cp.capacity := dsid_occupacy(cp.capacity_dsid)
@@ -583,7 +599,7 @@ with HasControlPlaneParameters
           next_state := curr_state_reg.bitSet(update_way, Bool(false))
         }
         log("dsid: %d set: %d hit: %d rw: %d update_way: %d curr_state: %x next_state: %x",
-          dsid, idx, hit, ren, update_way, curr_state_reg, next_state)
+          s1_in.dsid, idx, hit, ren, update_way, curr_state_reg, next_state)
       }
 
       val update_metadata = Wire(Vec(nWays, new MetadataEntry(tagBits, 16)))
@@ -595,7 +611,7 @@ with HasControlPlaneParameters
           metadata.dirty := Mux(read_hit, db_rdata_reg(update_way),
             Mux(read_miss, false.B, true.B))
           metadata.tag := tag
-          metadata.dsid := dsid
+          metadata.dsid := s1_in.dsid
         } .otherwise {
           metadata.valid := vb_rdata_reg(i)
           metadata.dirty := db_rdata_reg(i)
@@ -620,16 +636,16 @@ with HasControlPlaneParameters
           assert(update_way === repl_way, "update must = repl way when decrease a dsid's occupacy")
           val victim_valid = vb_rdata_reg(repl_way)
           dsid_occupacy.zipWithIndex foreach { case (dsid_occ, i) =>
-              when (i.U === dsid && (!victim_valid || i.U =/= repl_dsid)) {
+              when (i.U === s1_in.dsid && (!victim_valid || i.U =/= repl_dsid)) {
                 dsid_occ := requester_occupacy + 1.U
-              }.elsewhen(i.U =/= dsid && i.U === repl_dsid && victim_valid) {
+              }.elsewhen(i.U =/= s1_in.dsid && i.U === repl_dsid && victim_valid) {
                 dsid_occ := victim_occupacy - 1.U
               }
           }
           when (victim_valid) {
             log("victim dsid %d dec way %d old_value %d", repl_dsid, repl_way, victim_occupacy)
           }
-          log("dsid %d inc way %d old_value %d", dsid, update_way, requester_occupacy)
+          log("dsid %d inc way %d old_value %d", s1_in.dsid, update_way, requester_occupacy)
         }
       }
 
@@ -789,7 +805,7 @@ with HasControlPlaneParameters
       val out_opcode = Mux(out_read_valid, TLMessages.Get, TLMessages.PutFullData)
 
       out.a.bits.opcode  := out_opcode
-      out.a.bits.dsid    := dsid
+      out.a.bits.dsid    := s1_in.dsid
       out.a.bits.param   := UInt(0)
       out.a.bits.size    := outerBurstLen.U
       out.a.bits.source  := 0.asUInt(outerIdWidth.W)
@@ -807,19 +823,18 @@ with HasControlPlaneParameters
       // ########################################################
       // #                  data resp path                      #
       // ########################################################
-      val cache_s3 = Reg(new L2CacheReq(edgeIn.bundle, dsidWidth))
-      cache_s3 := s1_in //because there is no real pipeline so far
-      val s3_valid = Wire(Bool())
-      val s3_ready = Wire(Bool())
-      s3_valid := Bool(false)
-      TL2CacheInput.io.cache_s3.req := cache_s3
+      //val cache_s3 = Reg(new L2CacheReq(edgeIn.bundle, dsidWidth))
+      
+      //cache_s3 := s1_in //because there is no real pipeline so far
+      TL2CacheInput.io.cache_s3.req := s1_in //cache_s3
       TL2CacheInput.io.cache_s3.req.data := data_buf
       TL2CacheInput.io.cache_s3.valid := s3_valid
-      s3_ready := TL2CacheInput.io.cache_s3.ready
 
       when (state === s_data_resp) {
         s3_valid := Bool(true)
-        state := s_idle
+        when (s3_ready) {
+          state := s_idle
+        }
       }
 
       if (edgeOut.manager.anySupportAcquireB && edgeOut.client.anySupportProbe) {
