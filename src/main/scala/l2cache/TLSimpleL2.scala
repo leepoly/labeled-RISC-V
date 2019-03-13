@@ -151,27 +151,22 @@ class TLCacheConvertorIn(params: TLBundleParameters, dsidWidth: Int) extends Mod
     }
   }
 
-  when (convertor_debug) {
-    when (s0_state =/= s0_idle) {
-      printf("[in.a] cycle: %d a_addr %x in_write%x a_opcode%x s0_state%x cache_s0.valid%x cache_s0.ready%x a_ready%x a_valid%x a_source%x\n", 
+  //when (convertor_debug) {
+      when (GTimer() < 10000.U) {
+        printf("[in.a] cycle: %d a_addr %x a_opcode%x s0_state%x cache_s0.valid%x cache_s0.ready%x a_ready%x a_valid%x a_data %x\n", 
         GTimer(), io.tl_in_a.bits.address,
-        in_write_req,
         io.tl_in_a.bits.opcode, s0_state, io.cache_s0.valid, io.cache_s0.ready,
         io.tl_in_a_ready, io.tl_in_a_valid, 
-        io.tl_in_a.bits.source
+        io.tl_in_a.bits.data
         )
-    }
-  }
+      }
+  //}
   
   
 
   // *** gather_wdata ***
   // s_gather_write_data:
   // gather write data
-  val put_data_buf = Reg(Vec(8, UInt(64.W)))
-  val put_data_mask = Reg(init=Vec.fill(8)(Fill(outerBeatBytes, 0.U)))
-
-  
   when (in_write_req || (s0_state === s0_gather_write_data && in_recv_fire)) {
     when (s0_state === s0_idle) {
       gather_curr_beat_reg := s0_start_beat + 1.U
@@ -181,14 +176,12 @@ class TLCacheConvertorIn(params: TLBundleParameters, dsidWidth: Int) extends Mod
       assert(Bool(false), "state error")
     }
 
-    put_data_buf(gather_curr_beat) := in_data(64 - 1, 0)
-    put_data_mask(gather_curr_beat) := in_data_mask(8 - 1, 0)
+    s0_info.data(gather_curr_beat) := in_data(64 - 1, 0)
+    s0_info.mask(gather_curr_beat) := in_data_mask(8 - 1, 0)
     when (gather_last_beat) {
       s0_state := s0_send_bresp
     }
   }
-  s0_info.data := put_data_buf
-  s0_info.mask := put_data_mask
 
   // s_send_bresp:
   // send bresp, end write transaction
@@ -261,7 +254,7 @@ class TLCacheConvertorIn(params: TLBundleParameters, dsidWidth: Int) extends Mod
 
   val raddr_recv_ready = s0_state === s0_idle && !io.cache_rst && s3_state === s3_idle
   val waddr_recv_ready = s0_state === s0_idle && !io.cache_rst && s3_state === s3_idle
-  val wdata_recv_ready = s0_state === s0_gather_write_data
+  val wdata_recv_ready = s0_state === s0_gather_write_data && s3_state === s3_idle
   io.tl_in_a_ready := raddr_recv_ready || waddr_recv_ready || wdata_recv_ready
   val raddr_fire = raddr_recv_ready && in_recv_fire
   val waddr_fire = waddr_recv_ready && in_recv_fire
@@ -401,7 +394,7 @@ with HasControlPlaneParameters
 
       val start_beat = s1_in.address(innerBeatMSB, innerBeatLSB)
       val inner_end_beat_reg = Reg(UInt(4.W))
-      val inner_end_beat = Mux(state === s_idle, start_beat + in_len, inner_end_beat_reg)
+      val inner_end_beat = Mux(state === s_idle, start_beat + 7.U, inner_end_beat_reg)
 
       val merge_curr_beat = RegInit(0.asUInt(log2Ceil(8).W))
       val merge_last_beat = merge_curr_beat === inner_end_beat
@@ -418,26 +411,21 @@ with HasControlPlaneParameters
       val s1_valid = TL2CacheInput.io.cache_s0.valid
       TL2CacheInput.io.cache_rst := rst
       TL2CacheInput.io.cache_s0.ready := s1_ready
-      val s1_wdata_mask = Reg(Vec(outerDataBeats, UInt(8.W)))
-      val s1_wdata = Reg(Vec(outerDataBeats, UInt(outerBeatSize.W)))
 
-      def mergePutData(old_data: UInt, new_data: UInt, wmask: UInt): UInt = {
-        val full_wmask = FillInterleaved(8, wmask)
-        ((~full_wmask & old_data) | (full_wmask & new_data))
-      }
       when (s1_valid && s1_ready) {
         s1_in := TL2CacheInput.io.cache_s0.req
         state := s_tag_read_req
-        inner_end_beat_reg := start_beat + in_len
-
-        s1_wdata := s1_in.data
-        s1_wdata_mask := s1_in.mask
+        merge_curr_beat := start_beat
+        inner_end_beat_reg := start_beat + 7.U
       }
 
       val s3_valid = Wire(init = Bool(false))
       val s3_ready = TL2CacheInput.io.cache_s3.ready
       when (s1_ready && s1_valid) {
-        log("opcode %x, dsid %x, size %x, source %x, address %x, mask %x, data %x, ren%x, s1_valid%x s1_ready%x s3_valid%x s3_ready%x",
+        val wire_opcode = TL2CacheInput.io.cache_s0.req.opcode
+        val wire_ren = wire_opcode === TLMessages.Get
+        val wire_wen = wire_opcode === TLMessages.PutFullData || wire_opcode === TLMessages.PutPartialData
+        log("opcode %x, dsid %x, size %x, source %x, address %x, mask %x, data %x, ren%x/wen%x s1_valid%x s1_ready%x s3_valid%x s3_ready%x",
           TL2CacheInput.io.cache_s0.req.opcode,
           TL2CacheInput.io.cache_s0.req.dsid,
           TL2CacheInput.io.cache_s0.req.size,
@@ -445,12 +433,25 @@ with HasControlPlaneParameters
           TL2CacheInput.io.cache_s0.req.address,
           TL2CacheInput.io.cache_s0.req.mask.asUInt,
           TL2CacheInput.io.cache_s0.req.data.asUInt,
-          ren,
+          wire_ren, wire_wen,
           s1_valid,
           s1_ready,
           s3_valid, s3_ready
           )
       }
+
+/*      val wire_opcode = TL2CacheInput.io.cache_s0.req.opcode
+      val wire_ren = wire_opcode === TLMessages.Get
+      val wire_wen = wire_opcode === TLMessages.PutFullData || wire_opcode === TLMessages.PutPartialData
+      log("[debug] opcode%x, address %x, source%x, data %x, ren%x/wen%x s1_valid%x s1_ready%x s3_valid%x s3_ready%x",
+          TL2CacheInput.io.cache_s0.req.opcode,
+          TL2CacheInput.io.cache_s0.req.address,
+          TL2CacheInput.io.cache_s0.req.source,
+          TL2CacheInput.io.cache_s0.req.data.asUInt,
+          wire_ren, wire_wen,
+          s1_valid,
+          s1_ready,
+          s3_valid, s3_ready)*/
 
       // s_tag_read: inspecting meta data
       // to keep the sram access path short, sram addr and output are latched
@@ -712,14 +713,14 @@ with HasControlPlaneParameters
       // the old data(either read from data array or from refill) resides in data_buf
       // the new data(gathered from inner write) resides in put_data_buf
       
-      val put_data_buf = Reg(Vec(outerDataBeats, UInt(outerBeatSize.W)))
-      val put_data_mask = Reg(init=Vec.fill(outerDataBeats)(Fill(outerBeatBytes, 0.U)))
+      def mergePutData(old_data: UInt, new_data: UInt, wmask: UInt): UInt = {
+        val full_wmask = FillInterleaved(8, wmask)
+        ((~full_wmask & old_data) | (full_wmask & new_data))
+      }
       when (state === s_merge_put_data) {
         merge_curr_beat := merge_curr_beat + 1.U
-        for (i <- 0 until split) {
-          val idx = (merge_curr_beat << splitBits) + i.U
-          data_buf(idx) := mergePutData(data_buf(idx), s1_wdata(idx), s1_wdata_mask(idx))
-        }
+        val idx = merge_curr_beat
+        data_buf(idx) := mergePutData(data_buf(idx), s1_in.data(idx), s1_in.mask(idx))
         when (merge_last_beat) {
           state := s_data_write
         }
@@ -728,10 +729,8 @@ with HasControlPlaneParameters
       // s_data_write
       val (write_cnt, write_done) = Counter(state === s_data_write, innerDataBeats)
       data_write_cnt := write_cnt
-      for (i <- 0 until split) {
-        val idx = (data_write_cnt << splitBits) + i.U
-        din(i) := data_buf(idx)
-      }
+      din(data_write_cnt) := data_buf(data_write_cnt)
+      
       when (state === s_data_write && write_done) {
         when (ren) {
           state := s_data_resp

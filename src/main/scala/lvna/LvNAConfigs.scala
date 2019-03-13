@@ -14,7 +14,7 @@ class WithEmu extends Config ((site, here, up) => {
 
 class LvNAConfigemu extends Config(
   new WithoutFPU
-  ++ new WithNonblockingL1(8)
+  //++ new WithNonblockingL1(8)
   ++ new WithNL2CacheCapacity(256)
   ++ new WithNBanksPerMemChannel(1)
   ++ new WithNBigCores(1)
