@@ -460,10 +460,10 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
 
 
   val timer = GTimer()
-  val debug_flag = true.B
+  val debug_flag = false.B
   when (debug_flag) {
     when (tl_out_a.valid) {
-      printf("[L1info]acquire cycle: %d addr: %x isread: %d iswrite: %d\n", timer, tl_out_a.bits.address, s2_read, s2_write)
+      printf("[L1DCache]acquire cycle: %d addr: %x isread: %d iswrite: %d\n", timer, tl_out_a.bits.address, s2_read, s2_write)
     }
   }
 
@@ -507,11 +507,14 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
   when (blockProbeAfterGrantCount > 0) { blockProbeAfterGrantCount := blockProbeAfterGrantCount - 1 }
   val canAcceptCachedGrant = if (cacheParams.acquireBeforeRelease) !release_state.isOneOf(s_voluntary_writeback, s_voluntary_write_meta) else true.B
   tl_out.d.ready := Mux(grantIsCached, (!d_first || tl_out.e.ready) && canAcceptCachedGrant, true.B)
-  when (tl_out.d.fire()) {
-    when (debug_flag) {
-      printf("[L1info]grant cycle: %d\n", timer)
-    }
 
+  when (debug_flag) {
+    when (tl_out.d.valid) {
+      printf("[L1DCache]grant cycle: %d data: %x valid%x ready%x\n", timer, tl_out.d.bits.data, tl_out.d.valid, tl_out.d.ready)
+    }
+  }
+
+  when (tl_out.d.fire()) {
 
     when (grantIsCached) {
       grantInProgress := true

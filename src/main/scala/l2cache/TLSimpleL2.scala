@@ -127,7 +127,7 @@ class TLCacheConvertorIn(params: TLBundleParameters, dsidWidth: Int) extends Mod
   io.cache_s0.req := s0_info
   io.cache_s0.valid := s0_valid
 
-  when (s0_state === s0_idle) {
+  when (s0_state === s0_idle && s3_state === s3_idle) {
     when (in_read_req) {
       s0_info.address := s0_in_addr
       s0_info.source := in_id
@@ -151,23 +151,23 @@ class TLCacheConvertorIn(params: TLBundleParameters, dsidWidth: Int) extends Mod
     }
   }
 
-  //when (convertor_debug) {
-      when (GTimer() < 10000.U) {
-        printf("[in.a] cycle: %d a_addr %x a_opcode%x s0_state%x cache_s0.valid%x cache_s0.ready%x a_ready%x a_valid%x a_data %x\n", 
-        GTimer(), io.tl_in_a.bits.address,
-        io.tl_in_a.bits.opcode, s0_state, io.cache_s0.valid, io.cache_s0.ready,
-        io.tl_in_a_ready, io.tl_in_a_valid, 
-        io.tl_in_a.bits.data
-        )
-      }
-  //}
+  when (convertor_debug) {
+    when (GTimer() % 10000.U === 0.U) {
+      printf("[in.a] cycle: %d a_addr %x a_opcode%x s0_state%x cache_s0.valid%x cache_s0.ready%x a_ready%x a_valid%x a_data %x\n", 
+      GTimer(), io.tl_in_a.bits.address,
+      io.tl_in_a.bits.opcode, s0_state, io.cache_s0.valid, io.cache_s0.ready,
+      io.tl_in_a_ready, io.tl_in_a_valid, 
+      io.tl_in_a.bits.data
+      )
+    }
+  }
   
   
 
   // *** gather_wdata ***
   // s_gather_write_data:
   // gather write data
-  when (in_write_req || (s0_state === s0_gather_write_data && in_recv_fire)) {
+  when ((in_write_req || (s0_state === s0_gather_write_data && in_recv_fire)) && (s3_state === s3_idle)) {
     when (s0_state === s0_idle) {
       gather_curr_beat_reg := s0_start_beat + 1.U
     } .elsewhen (s0_state === s0_gather_write_data) {
@@ -185,17 +185,13 @@ class TLCacheConvertorIn(params: TLBundleParameters, dsidWidth: Int) extends Mod
 
   // s_send_bresp:
   // send bresp, end write transaction
-  val in_write_ok = s0_state === s0_send_bresp
+  val in_write_ok = s0_state === s0_send_bresp && s3_state === s3_idle
   val in_send_ok = io.tl_in_d_valid && io.tl_in_d_ready
 
-  when (s0_state === s0_send_bresp && in_send_ok) {
+  when (s0_state === s0_send_bresp && in_send_ok && s3_state === s3_idle) {
     s0_state := s0_wait_cache_ready
   }
   //TODO: input queue could be added here, for non-blocking
-
-  // when (s0_state === s0_wait_cache_ready) {
-  //   s0_state := s0_wait_cache_ready1
-  // }
 
   when (s0_state === s0_wait_cache_ready && s3_state === s3_idle) { //won't give req to cache until resp finished
     s0_valid := Bool(true)
@@ -217,7 +213,7 @@ class TLCacheConvertorIn(params: TLBundleParameters, dsidWidth: Int) extends Mod
   val data_resp = Wire(UInt(64.W))
   data_resp := data_resp_buf(resp_curr_beat)
 
-  val in_read_ok = s3_state === s3_data_resp
+  val in_read_ok = s3_state === s3_data_resp //data_resp is prior than accepting a req
 
   when (io.cache_s3.valid && s3_state === s3_idle) {
     data_resp_buf := io.cache_s3.req.data
@@ -240,6 +236,7 @@ class TLCacheConvertorIn(params: TLBundleParameters, dsidWidth: Int) extends Mod
   io.tl_in_d.bits.denied  := Bool(false)
   io.tl_in_d.bits.data    := data_resp
   io.tl_in_d.bits.corrupt := Bool(false)
+  
   when (convertor_debug) {
     when ((s3_state =/= s3_idle)) {
       printf("[in.d] cycle: %d d_opcode%x s3_state%x cache_s3.valid%x d_ready%x d_valid%x d_source%x resp_curr_beat%x d_data %x\n", 
@@ -440,18 +437,15 @@ with HasControlPlaneParameters
           )
       }
 
-/*      val wire_opcode = TL2CacheInput.io.cache_s0.req.opcode
-      val wire_ren = wire_opcode === TLMessages.Get
-      val wire_wen = wire_opcode === TLMessages.PutFullData || wire_opcode === TLMessages.PutPartialData
-      log("[debug] opcode%x, address %x, source%x, data %x, ren%x/wen%x s1_valid%x s1_ready%x s3_valid%x s3_ready%x",
-          TL2CacheInput.io.cache_s0.req.opcode,
-          TL2CacheInput.io.cache_s0.req.address,
-          TL2CacheInput.io.cache_s0.req.source,
-          TL2CacheInput.io.cache_s0.req.data.asUInt,
-          wire_ren, wire_wen,
+      /*when (GTimer() % 10000.U === 0.U) {
+        log("[debug] addr %x, s1_valid%x, s1_ready%x, s3_valid%x, s3_ready%x",
+          addr,
           s1_valid,
           s1_ready,
-          s3_valid, s3_ready)*/
+          s3_valid,
+          s3_ready
+        )
+      }*/
 
       // s_tag_read: inspecting meta data
       // to keep the sram access path short, sram addr and output are latched

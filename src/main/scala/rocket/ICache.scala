@@ -380,6 +380,19 @@ class ICacheModule(outer: ICache) extends LazyModuleImp(outer)
                     fromSource = UInt(0),
                     toAddress = (refill_addr >> blockOffBits) << blockOffBits,
                     lgSize = lgCacheBlockBytes)._2
+
+  val timer = GTimer()
+  val debug_flag = false.B
+  when (debug_flag) {
+    when (tl_out.a.valid) {
+      printf("[L1ICache]acquire cycle: %d addr: %x valid%x ready%x\n", timer, tl_out.a.bits.address, tl_out.a.valid, tl_out.a.ready)
+    }
+
+    when (tl_out.d.valid) {
+      printf("[L1ICache]grant cycle: %d data: %x valid%x ready%x\n", timer, tl_out.d.bits.data, tl_out.d.valid, tl_out.d.ready)
+    }
+  }
+
   if (cacheParams.prefetch) {
     val (crosses_page, next_block) = Split(refill_addr(pgIdxBits-1, blockOffBits) +& 1, pgIdxBits-blockOffBits)
     when (tl_out.a.fire()) {
