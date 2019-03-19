@@ -258,6 +258,124 @@ class TLCacheConvertorIn(params: TLBundleParameters, dsidWidth: Int) extends Mod
   val wdata_fire = wdata_recv_ready && in_recv_fire
 }
 
+
+class TLCacheConvertorOut(params: TLBundleParameters, dsidWidth: Int) extends Module with L2CacheParams1{
+  val io = new Bundle {
+    // out.a: L2 ----> ConvertorOut ----> Mem
+    // out.d: L2 <---- ConvertorOut <---- Mem
+    val tl_out_a = new BitsSnoop(new TLBundleA(params))
+    val tl_out_d = new BitsSnoop(new TLBundleD(params)).flip
+    val tl_out_a_valid = Output(Bool())
+    val tl_out_a_ready = Input(Bool())
+    val tl_out_d_valid = Input(Bool())
+    val tl_out_d_ready = Output(Bool())
+    //writeback
+    val wb_addr = Input(UInt(width = params.addressBits.W))
+    val wb_data = Input(Vec(blockSize / params.dataBits, UInt(params.dataBits.W)))
+    val wb_valid = Input(Bool())
+    val wb_ready = Output(Bool())
+    //refill
+    val rf_addr = Input(UInt(width = params.addressBits.W))
+    val rf_data = Output(Vec(blockSize / params.dataBits, UInt(params.dataBits.W)))
+    val rf_addr_valid = Input(Bool())
+    val rf_data_valid = Output(Bool())
+    val rf_ready = Input(Bool())
+    val dsid = Input(UInt(dsidWidth.W))
+  }
+  val outerBeatSize = io.tl_out_d.bits.params.dataBits
+  val outerDataBeats = blockSize / outerBeatSize
+  val outerBeatBytes = outerBeatSize / 8
+  val outerBeatLen = log2Ceil(outerBeatBytes)
+  val outerBurstLen = outerBeatLen + log2Ceil(outerDataBeats)
+
+  val out_raddr_fire = io.tl_out_a_valid && io.tl_out_a_ready
+  val out_waddr_fire = io.tl_out_a_valid && io.tl_out_a_ready
+  val out_wdata_fire = io.tl_out_a_valid && io.tl_out_a_ready
+  val out_wreq_fire = io.tl_out_d_valid && io.tl_out_d_ready
+  val out_rdata_fire = io.tl_out_d_valid && io.tl_out_d_ready
+  val out_rdata = io.tl_out_d.bits.data
+
+  val wb_idle :: wb_wait_ram_awready :: wb_do_ram_write :: wb_wait_ram_bresp :: wb_wait_refill :: Nil = Enum(UInt(), 5)
+  //without MSHR, we now support simple serial wb+rf
+  val rf_idle :: rf_wait_ram_ar :: rf_do_ram_read :: rf_wait_cache_ready :: Nil = Enum(UInt(), 4)
+  val wb_state = Reg(init = wb_idle)
+  val rf_state = Reg(init = rf_idle)
+  val convertor_out_debug = Bool(true)
+
+  //writeback
+  val wb_addr_buf = Reg(UInt(width = params.addressBits.W))
+  when (wb_state === wb_idle && io.wb_valid) {
+    wb_state := wb_wait_ram_awready
+    wb_addr_buf := io.wb_addr
+  }
+  when (wb_state === wb_wait_ram_awready) {
+    wb_state := wb_do_ram_write //there is one useless extra cycle...
+  }
+  val (wb_cnt, wb_done) = Counter(out_waddr_fire && wb_state === wb_do_ram_write, outerDataBeats)
+  when (wb_state === wb_do_ram_write && wb_done) {
+    wb_state := wb_wait_ram_bresp
+  }
+  when (wb_state === wb_wait_ram_bresp && out_wreq_fire) {
+    wb_state := wb_wait_refill
+  }
+  val out_write_valid = wb_state === wb_do_ram_write
+
+  //refill
+  val no_wb_req = wb_state === wb_idle || wb_state === wb_wait_refill
+  when (rf_state === rf_idle && io.rf_addr_valid && no_wb_req) {
+    rf_state := rf_wait_ram_ar
+  }
+  io.rf_data_valid := rf_state === rf_wait_cache_ready && no_wb_req
+  io.wb_ready := wb_state === wb_idle
+  val rf_mem_data = Reg(Vec(blockSize / params.dataBits, UInt(params.dataBits.W)))
+  when (rf_state === rf_wait_ram_ar && no_wb_req && out_raddr_fire) {
+    rf_state := rf_do_ram_read
+  }
+  val (rf_mem_cnt, rf_mem_done) = Counter(rf_state === rf_do_ram_read && no_wb_req && out_rdata_fire, outerDataBeats)
+  when (rf_state === rf_do_ram_read && no_wb_req && out_rdata_fire) {
+    rf_mem_data(rf_mem_cnt) := out_rdata
+    when (rf_mem_done) {
+      rf_state := rf_wait_cache_ready
+    }
+  }
+  when (rf_state === rf_wait_cache_ready && no_wb_req && io.rf_ready) {
+    rf_state := rf_idle
+    io.rf_data := rf_mem_data
+  }
+
+  when (convertor_out_debug) {
+    printf("cycle%d rf_state%x , rf_addr_valid%x, rf_data_valid%x, a_valid%x, a_ready%x, d_valid%x, d_ready%x rf_mem_cnt%x, data %x \n",
+      GTimer(),
+      rf_state,
+      io.rf_addr_valid, io.rf_data_valid,
+      io.tl_out_a_valid, io.tl_out_a_ready, io.tl_out_d_valid, io.tl_out_d_ready,
+      rf_mem_cnt, 
+      io.tl_out_d.bits.data
+      )
+  }
+
+  //outer wire
+  val out_read_valid = (rf_state === rf_wait_ram_ar) && no_wb_req
+  val out_data = io.wb_data(wb_cnt)
+  val out_addr = Mux(out_read_valid, io.rf_addr, wb_addr_buf)
+  val out_opcode = Mux(out_read_valid, TLMessages.Get, TLMessages.PutFullData)
+  io.tl_out_a.bits.opcode  := out_opcode
+  io.tl_out_a.bits.dsid    := io.dsid
+  io.tl_out_a.bits.param   := UInt(0)
+  io.tl_out_a.bits.size    := outerBurstLen.U
+  io.tl_out_a.bits.source  := 0.asUInt(params.sourceBits.W)
+  io.tl_out_a.bits.address := out_addr
+  io.tl_out_a.bits.mask    := 0xff.U //edgeOut.mask(out_addr, outerBurstLen.U)
+  io.tl_out_a.bits.data    := out_data
+  io.tl_out_a.bits.corrupt := Bool(false)
+
+  io.tl_out_a_valid := out_write_valid || out_read_valid
+  // read data channel signals
+  io.tl_out_d_ready := (rf_state === rf_do_ram_read) || (wb_state === wb_wait_ram_bresp)
+
+}
+
+
 // ============================== DCache ==============================
 class TLSimpleL2Cache(bankid: Int, param: TLL2CacheParams)(implicit p: Parameters) extends LazyModule
 with HasControlPlaneParameters
@@ -437,16 +555,6 @@ with HasControlPlaneParameters
           )
       }
 
-      /*when (GTimer() % 10000.U === 0.U) {
-        log("[debug] addr %x, s1_valid%x, s1_ready%x, s3_valid%x, s3_ready%x",
-          addr,
-          s1_valid,
-          s1_ready,
-          s3_valid,
-          s3_ready
-        )
-      }*/
-
       // s_tag_read: inspecting meta data
       // to keep the sram access path short, sram addr and output are latched
       // now, tag access has three stages:
@@ -511,7 +619,6 @@ with HasControlPlaneParameters
       val hit_way = Wire(Bits())
       hit_way := Bits(0)
       (0 until nWays).foreach(i => when (tag_match_way(i)) { hit_way := Bits(i) })
-
 
 
       cp.dsid := s1_in.dsid
@@ -736,7 +843,7 @@ with HasControlPlaneParameters
       // outer tilelink interface
       // external memory bus width is 32/64/128bits
       // so each memport read/write is mapped into a whole tilelink bus width read/write
-      val axi4_size = log2Up(outerBeatBytes).U
+      //val axi4_size = log2Up(outerBeatBytes).U
       //val mem_addr = Cat(addr(tagMSB, bankLSB), 0.asUInt(blockOffsetBits.W))
       val mem_addr = Cat(s1_in.address(tagMSB, indexLSB), 0.asUInt(blockOffsetBits.W))
 
@@ -750,68 +857,97 @@ with HasControlPlaneParameters
       // #                  write back path                      #
       // #########################################################
       // s_wait_ram_awready
-      when (state === s_wait_ram_awready) {
-        state := s_do_ram_write
+
+      val TL2CacheOutput = Module(new TLCacheConvertorOut(edgeIn.bundle, dsidWidth))
+      TL2CacheOutput.io.dsid := s1_in.dsid
+      out.a.bits := TL2CacheOutput.io.tl_out_a.bits
+      out.a.valid := TL2CacheOutput.io.tl_out_a_valid
+      TL2CacheOutput.io.tl_out_a_ready := out.a.ready
+      TL2CacheOutput.io.tl_out_d.bits := out.d.bits
+      TL2CacheOutput.io.tl_out_d_valid := out.d.valid
+      out.d.ready := TL2CacheOutput.io.tl_out_d_ready
+
+      TL2CacheOutput.io.wb_addr := writeback_addr
+      TL2CacheOutput.io.wb_data := data_buf
+      TL2CacheOutput.io.wb_valid := state === s_wait_ram_awready
+      when (TL2CacheOutput.io.wb_ready && state === s_wait_ram_awready) {
+        state := s_wait_ram_arready // also wb_valid -> false
       }
 
-      val (wb_cnt, wb_done) = Counter(out_wdata_fire && state === s_do_ram_write, outerDataBeats)
-      when (state === s_do_ram_write && wb_done) {
-        state := s_wait_ram_bresp
-      }
 
-      val out_write_valid = state === s_do_ram_write
+      // when (state === s_wait_ram_awready) {
+      //   state := s_do_ram_write
+      // }
 
-      when (state === s_wait_ram_bresp && out_wreq_fire) {
-        when (read_miss_writeback || write_miss_writeback) {
-          // do refill
-          state := s_wait_ram_arready
-        } .otherwise {
-          assert(N, "Unexpected condition in s_wait_ram_bresp")
-        }
-      }
+      // val (wb_cnt, wb_done) = Counter(out_wdata_fire && state === s_do_ram_write, outerDataBeats)
+      // when (state === s_do_ram_write && wb_done) {
+      //   state := s_wait_ram_bresp
+      // }
 
-      // write response channel signals
-      // out.d.ready := 
+      // val out_write_valid = state === s_do_ram_write
+
+      // when (state === s_wait_ram_bresp && out_wreq_fire) {
+      //   when (read_miss_writeback || write_miss_writeback) {
+      //     // do refill
+      //     state := s_wait_ram_arready
+      //   } .otherwise {
+      //     assert(N, "Unexpected condition in s_wait_ram_bresp")
+      //   }
+      // }
 
       // #####################################################
       // #                  refill path                      #
       // #####################################################
-      when (state === s_wait_ram_arready && out_raddr_fire) {
-        state := s_do_ram_read
-      }
-      val (refill_cnt, refill_done) = Counter(out_rdata_fire && state === s_do_ram_read, outerDataBeats)
-      when (state === s_do_ram_read && out_rdata_fire) {
-        data_buf(refill_cnt) := out_rdata
-        when (refill_done) {
-          when (ren) {
-            state := s_data_write
-          } .otherwise {
-            state := s_merge_put_data
-          }
+      TL2CacheOutput.io.rf_addr := mem_addr
+      TL2CacheOutput.io.rf_addr_valid := state === s_wait_ram_arready
+      TL2CacheOutput.io.rf_ready := state === s_wait_ram_arready
+      when (TL2CacheOutput.io.rf_ready && TL2CacheOutput.io.rf_data_valid) {
+        data_buf := TL2CacheOutput.io.rf_data
+        when (ren) {
+          state := s_data_write // also rf_ready turns false
+        } .otherwise {
+          state := s_merge_put_data
         }
       }
 
-      val out_read_valid = state === s_wait_ram_arready
+      // when (state === s_wait_ram_arready && out_raddr_fire) {
+      //   state := s_do_ram_read
+      // }
+      // val (refill_cnt, refill_done) = Counter(out_rdata_fire && state === s_do_ram_read, outerDataBeats)
+      // when (state === s_do_ram_read && out_rdata_fire) {
+      //   data_buf(refill_cnt) := out_rdata
+      //   when (refill_done) {
+      //     when (ren) {
+      //       state := s_data_write
+      //     } .otherwise {
+      //       state := s_merge_put_data
+      //     }
+      //   }
+      // }
 
-      val out_data = data_buf(wb_cnt)
-      val out_addr = Mux(out_read_valid, mem_addr, writeback_addr)
-      val out_opcode = Mux(out_read_valid, TLMessages.Get, TLMessages.PutFullData)
+      // val out_read_valid = state === s_wait_ram_arready
 
-      out.a.bits.opcode  := out_opcode
-      out.a.bits.dsid    := s1_in.dsid
-      out.a.bits.param   := UInt(0)
-      out.a.bits.size    := outerBurstLen.U
-      out.a.bits.source  := 0.asUInt(outerIdWidth.W)
-      out.a.bits.address := out_addr
-      out.a.bits.mask    := edgeOut.mask(out_addr, outerBurstLen.U)
-      out.a.bits.data    := out_data
-      out.a.bits.corrupt := Bool(false)
-      //edgeOut.Put(0.asUInt(outerIdWidth.W), out_addr, outerBeatLen.U, out_data)
+      // val out_data = data_buf(wb_cnt)
+      // val out_addr = Mux(out_read_valid, mem_addr, writeback_addr)
+      // val out_opcode = Mux(out_read_valid, TLMessages.Get, TLMessages.PutFullData)
+
+      // out.a.bits.opcode  := out_opcode
+      // out.a.bits.dsid    := s1_in.dsid
+      // out.a.bits.param   := UInt(0)
+      // out.a.bits.size    := outerBurstLen.U
+      // out.a.bits.source  := 0.asUInt(outerIdWidth.W)
+      // out.a.bits.address := out_addr
+      // out.a.bits.mask    := edgeOut.mask(out_addr, outerBurstLen.U)
+      // //printf("[debug] mask %x \n", out.a.bits.mask)
+
+      // out.a.bits.data    := out_data
+      // out.a.bits.corrupt := Bool(false)
+      // //edgeOut.Put(0.asUInt(outerIdWidth.W), out_addr, outerBeatLen.U, out_data)
       
-      out.a.valid := out_write_valid || out_read_valid
+      // out.a.valid := out_write_valid || out_read_valid
 
-      // read data channel signals
-      out.d.ready := (state === s_do_ram_read) || (state === s_wait_ram_bresp)
+      // // read data channel signals
+      // out.d.ready := (state === s_do_ram_read) || (state === s_wait_ram_bresp)
 
       // ########################################################
       // #                  data resp path                      #

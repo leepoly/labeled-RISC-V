@@ -41,9 +41,9 @@ class LvNAFPGAConfigzedboard extends Config(
 class LvNAFPGAConfigzcu102 extends Config(
   new WithoutFPU
   ++ new WithNonblockingL1(8)
-  ++ new WithNBanksPerMemChannel(4)
+  ++ new WithNBanksPerMemChannel(1)
   ++ new WithNL2CacheCapacity(2048)
-  ++ new WithNBigCores(4)
+  ++ new WithNBigCores(1)
   ++ new WithRationalRocketTiles
   ++ new WithTimebase(BigInt(10000000)) // 10 MHz
   ++ new WithExtMemSize(0x80000000L)
