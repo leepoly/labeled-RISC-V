@@ -76,7 +76,7 @@ class TLCacheConvertorIn(params: TLBundleParameters, dsidWidth: Int) extends Mod
   }
   val s0_idle :: s0_gather_write_data :: s0_send_bresp :: s0_wait_cache_ready :: Nil = Enum(UInt(), 4)
   val s0_state = Reg(init = s0_idle)
-  val convertor_debug = Bool(false)
+  val convertor_debug = Bool(true)
 
   //cache only sees 64B per cycle
   val innerBeatSize = io.tl_in_d.bits.params.dataBits
@@ -239,7 +239,7 @@ class TLCacheConvertorIn(params: TLBundleParameters, dsidWidth: Int) extends Mod
   
   when (convertor_debug) {
     when ((s3_state =/= s3_idle)) {
-      printf("[in.d] cycle: %d d_opcode%x s3_state%x cache_s3.valid%x d_ready%x d_valid%x d_source%x resp_curr_beat%x d_data %x\n", 
+      printf("[in.d] cycle: %d d_opcode%x s3_state%x, cache_s3.valid%x d_ready%x d_valid%x d_source%x resp_curr_beat%x d_data %x\n", 
         GTimer(),
         io.tl_in_d.bits.opcode, s3_state, io.cache_s3.valid, 
         io.tl_in_d_ready, io.tl_in_d_valid, 
@@ -304,14 +304,24 @@ class TLCacheConvertorOut(params: TLBundleParameters, dsidWidth: Int) extends Mo
 
   //writeback
   val wb_addr_buf = Reg(UInt(width = params.addressBits.W))
+  val wb_data_buf = Reg(Vec(blockSize / params.dataBits, UInt(params.dataBits.W)))
   when (wb_state === wb_idle && io.wb_valid) {
     wb_state := wb_wait_ram_awready
     wb_addr_buf := io.wb_addr
+    wb_data_buf := io.wb_data
+    when (convertor_out_debug) {
+      printf("[out.a] wb cycle: %d, wb_state %x, wb_addr %x, wb_data %x \n",
+        GTimer(),
+        wb_state,
+        io.wb_addr,
+        io.wb_data.asUInt
+        )
+    }
   }
   when (wb_state === wb_wait_ram_awready) {
     wb_state := wb_do_ram_write //there is one useless extra cycle...
   }
-  val (wb_cnt, wb_done) = Counter(out_waddr_fire && wb_state === wb_do_ram_write, outerDataBeats)
+  val (wb_cnt, wb_done) = Counter(out_wdata_fire && wb_state === wb_do_ram_write, outerDataBeats)
   when (wb_state === wb_do_ram_write && wb_done) {
     wb_state := wb_wait_ram_bresp
   }
@@ -341,22 +351,32 @@ class TLCacheConvertorOut(params: TLBundleParameters, dsidWidth: Int) extends Mo
   when (rf_state === rf_wait_cache_ready && no_wb_req && io.rf_ready) {
     rf_state := rf_idle
     io.rf_data := rf_mem_data
+    when (wb_state === wb_wait_refill) {
+      wb_state := wb_idle
+    }
   }
 
   when (convertor_out_debug) {
-    printf("cycle%d rf_state%x , rf_addr_valid%x, rf_data_valid%x, a_valid%x, a_ready%x, d_valid%x, d_ready%x rf_mem_cnt%x, data %x \n",
-      GTimer(),
-      rf_state,
-      io.rf_addr_valid, io.rf_data_valid,
-      io.tl_out_a_valid, io.tl_out_a_ready, io.tl_out_d_valid, io.tl_out_d_ready,
-      rf_mem_cnt, 
-      io.tl_out_d.bits.data
+    when (rf_state =/= rf_idle && rf_state =/= rf_do_ram_read) {
+      printf("cycle%d rf_state%x, rf_addr_valid%x, rf_data_valid%x, a_valid%x, a_ready%x, d_valid%x, d_ready%x rf_mem_cnt%x, data %x \n",
+        GTimer(),
+        rf_state,
+        io.rf_addr_valid, io.rf_data_valid,
+        io.tl_out_a_valid, io.tl_out_a_ready, io.tl_out_d_valid, io.tl_out_d_ready,
+        rf_mem_cnt, 
+        io.tl_out_d.bits.data
       )
+    }
+    when (wb_state =/= wb_idle) {
+      printf("cycle%d wb_state%x no_wb_req%x\n",
+        GTimer(), wb_state, no_wb_req
+      )
+    }
   }
 
   //outer wire
   val out_read_valid = (rf_state === rf_wait_ram_ar) && no_wb_req
-  val out_data = io.wb_data(wb_cnt)
+  val out_data = wb_data_buf(wb_cnt)
   val out_addr = Mux(out_read_valid, io.rf_addr, wb_addr_buf)
   val out_opcode = Mux(out_read_valid, TLMessages.Get, TLMessages.PutFullData)
   io.tl_out_a.bits.opcode  := out_opcode
@@ -658,9 +678,9 @@ with HasControlPlaneParameters
           log_part("write addr: %x idx: %d tag: %x hit: %d ", addr, idx, tag, hit)
         }
         when (hit) {
-          log_plain("hit_way: %d\n", hit_way)
+          log_plain("[hit] hit_way: %d\n", hit_way)
         } .elsewhen (need_writeback) {
-          log_plain("repl_way: %d wb_addr: %x\n", repl_way, writeback_addr)
+          log_plain("[wb] repl_way: %d wb_addr: %x\n", repl_way, writeback_addr)
         } .otherwise {
           log_plain("repl_way: %d repl_addr: %x\n", repl_way, writeback_addr)
         }

@@ -460,7 +460,7 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
 
 
   val timer = GTimer()
-  val debug_flag = false.B
+  val debug_flag = true.B
   when (debug_flag) {
     when (tl_out_a.valid) {
       printf("[L1DCache]acquire cycle: %d addr: %x isread: %d iswrite: %d\n", timer, tl_out_a.bits.address, s2_read, s2_write)
