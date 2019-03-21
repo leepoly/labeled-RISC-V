@@ -39,11 +39,12 @@ class L2CacheReq(params: TLBundleParameters, dsidWidth: Int) extends Bundle with
   val opcode = UInt(3.W)
   val dsid = UInt(width = dsidWidth.W)
   val param = UInt(1.W)
-  val size = UInt(width = log2Up(log2Ceil(params.dataBits / 8) + log2Ceil(64 * 8 / params.dataBits)).W)
+  val size = UInt(width = log2Up(log2Ceil(params.dataBits / 8) + log2Ceil(blockSize / params.dataBits)).W)
   val source = UInt(width = params.sourceBits.W)
   val address = UInt(width = params.addressBits.W)
-  val mask = Vec(8, UInt(8.W))
+  val mask = Vec(blockSize / params.dataBits, UInt((params.dataBits / 8).W))
   val data = Vec(blockSize / params.dataBits, UInt(params.dataBits.W))
+  val in_len = UInt(4.W)
   override def cloneType = new L2CacheReq(params, dsidWidth).asInstanceOf[this.type]
 }
 
@@ -87,9 +88,9 @@ class TLCacheConvertorIn(params: TLBundleParameters, dsidWidth: Int) extends Mod
   val innerBeatLSB = innerBeatBits
   val innerBeatMSB = innerBeatLSB + innerBeatIndexBits - 1
 
-  val outerBeatSize = 64 * 8//io.out.d.bits.params.dataBits
-  val outerBeatBytes = outerBeatSize / 8
-  val outerDataBeats = blockSize / outerBeatSize
+  //val outerBeatSize = 64 * 8//io.out.d.bits.params.dataBits
+  //val outerBeatBytes = outerBeatSize / 8
+  //val outerDataBeats = blockSize / outerBeatSize
   val addrWidth = io.tl_in_a.bits.params.addressBits
   val innerIdWidth = io.tl_in_a.bits.params.sourceBits
   //val split = innerBeatSize / outerBeatSize
@@ -102,7 +103,7 @@ class TLCacheConvertorIn(params: TLBundleParameters, dsidWidth: Int) extends Mod
   val in_id   = io.tl_in_a.bits.source
 
   val in_len_shift = io.tl_in_a.bits.size >= innerBeatBits.U
-  val in_len  = Mux(in_len_shift, ((1.U << io.tl_in_a.bits.size) >> innerBeatBits) - 1.U, 0.U)  // #word, i.e., arlen in AXI
+  val s0_in_len  = Mux(in_len_shift, ((1.U << io.tl_in_a.bits.size) >> innerBeatBits) - 1.U, 0.U)  // #word, i.e., arlen in AXI
   val in_data = io.tl_in_a.bits.data
   val in_data_mask = io.tl_in_a.bits.mask
 
@@ -113,7 +114,7 @@ class TLCacheConvertorIn(params: TLBundleParameters, dsidWidth: Int) extends Mod
 
   val s0_start_beat = s0_in_addr(innerBeatMSB, innerBeatLSB)
   val s0_inner_end_beat_reg = Reg(UInt(4.W))
-  val s0_inner_end_beat = Mux(s0_state === s0_idle, s0_start_beat + in_len, s0_inner_end_beat_reg)
+  val s0_inner_end_beat = Mux(s0_state === s0_idle, s0_start_beat + s0_in_len, s0_inner_end_beat_reg)
   val gather_curr_beat_reg = RegInit(0.asUInt(log2Ceil(innerDataBeats).W))
   val gather_curr_beat = Mux(s0_state === s0_idle, s0_start_beat, gather_curr_beat_reg)
   val gather_last_beat = gather_curr_beat === s0_inner_end_beat
@@ -134,7 +135,8 @@ class TLCacheConvertorIn(params: TLBundleParameters, dsidWidth: Int) extends Mod
       s0_info.opcode := in_opcode
       s0_info.dsid := in_dsid
       s0_info.size := io.tl_in_a.bits.size
-      s0_inner_end_beat_reg := s0_start_beat + in_len
+      s0_inner_end_beat_reg := s0_start_beat + s0_in_len
+      s0_info.in_len := s0_in_len
 
       s0_state := s0_wait_cache_ready
     } .elsewhen (in_write_req) {
@@ -143,21 +145,21 @@ class TLCacheConvertorIn(params: TLBundleParameters, dsidWidth: Int) extends Mod
       s0_info.opcode := in_opcode
       s0_info.dsid := in_dsid
       s0_info.size := io.tl_in_a.bits.size
-      s0_inner_end_beat_reg := s0_start_beat + in_len
+      s0_inner_end_beat_reg := s0_start_beat + s0_in_len
+      s0_info.in_len := s0_in_len
 
       s0_state := s0_gather_write_data
-    // } .elsewhen (io.tl.b.fire() || io.tl.c.fire() || io.tl.e.fire()) {
-    //   assert(Bool(false), "Inner tilelink Unexpected handshake")
     }
   }
 
   when (convertor_debug) {
-    when (GTimer() % 10000.U === 0.U) {
-      printf("[in.a] cycle: %d a_addr %x a_opcode%x s0_state%x cache_s0.valid%x cache_s0.ready%x a_ready%x a_valid%x a_data %x\n", 
+    when (GTimer() % 10000.U === 0.U || in_recv_fire) {
+      printf("[in.a] cycle: %d a_addr %x a_opcode%x s0_state%x cache_s0.valid%x cache_s0.ready%x a_ready%x a_valid%x a_data %x, in_len %x\n", 
       GTimer(), io.tl_in_a.bits.address,
       io.tl_in_a.bits.opcode, s0_state, io.cache_s0.valid, io.cache_s0.ready,
       io.tl_in_a_ready, io.tl_in_a_valid, 
-      io.tl_in_a.bits.data
+      io.tl_in_a.bits.data,
+      s0_in_len
       )
     }
   }
@@ -176,8 +178,8 @@ class TLCacheConvertorIn(params: TLBundleParameters, dsidWidth: Int) extends Mod
       assert(Bool(false), "state error")
     }
 
-    s0_info.data(gather_curr_beat) := in_data(64 - 1, 0)
-    s0_info.mask(gather_curr_beat) := in_data_mask(8 - 1, 0)
+    s0_info.data(gather_curr_beat) := in_data(params.dataBits - 1, 0)
+    s0_info.mask(gather_curr_beat) := in_data_mask(params.dataBits / 8 - 1, 0)
     when (gather_last_beat) {
       s0_state := s0_send_bresp
     }
@@ -205,12 +207,12 @@ class TLCacheConvertorIn(params: TLBundleParameters, dsidWidth: Int) extends Mod
   val s3_in_addr = io.cache_s3.req.address
   val s3_start_beat = s3_in_addr(innerBeatMSB, innerBeatLSB)
   val s3_inner_end_beat_reg = Reg(UInt(4.W))
-  val s3_inner_end_beat = Mux(s3_state === s3_idle, s3_start_beat + 7.U, s3_inner_end_beat_reg)
+  val s3_inner_end_beat = Mux(s3_state === s3_idle, s3_start_beat + io.cache_s3.req.in_len, s3_inner_end_beat_reg)
   io.cache_s3.ready := Mux(s3_state === s3_idle, Bool(true), Bool(false))
-  val data_resp_buf = Reg(Vec(8, UInt(64.W)))
+  val data_resp_buf = Reg(Vec(blockSize / params.dataBits, UInt(params.dataBits.W)))
   val resp_curr_beat = RegInit(0.asUInt(log2Ceil(innerDataBeats).W))
   val resp_last_beat = resp_curr_beat === s3_inner_end_beat
-  val data_resp = Wire(UInt(64.W))
+  val data_resp = Wire(UInt(params.dataBits.W))
   data_resp := data_resp_buf(resp_curr_beat)
 
   val in_read_ok = s3_state === s3_data_resp //data_resp is prior than accepting a req
@@ -219,7 +221,7 @@ class TLCacheConvertorIn(params: TLBundleParameters, dsidWidth: Int) extends Mod
     data_resp_buf := io.cache_s3.req.data
     s3_state := s3_data_resp
     resp_curr_beat := s3_start_beat
-    s3_inner_end_beat_reg := s3_start_beat + 7.U
+    s3_inner_end_beat_reg := s3_start_beat + io.cache_s3.req.in_len
   }
   when (s3_state === s3_data_resp && in_send_ok) {
     resp_curr_beat := resp_curr_beat + 1.U
@@ -441,8 +443,8 @@ with HasControlPlaneParameters
       val innerBeatLSB = innerBeatBits
       val innerBeatMSB = innerBeatLSB + innerBeatIndexBits - 1
 
-      val in_len_shift = in.a.bits.size >= innerBeatBits.U
-      val in_len  = Mux(in_len_shift, ((1.U << in.a.bits.size) >> innerBeatBits) - 1.U, 0.U)  // #word, i.e., arlen in AXI
+      //val in_len_shift = in.a.bits.size >= innerBeatBits.U
+      //val in_len  = Mux(in_len_shift, ((1.U << in.a.bits.size) >> innerBeatBits) - 1.U, 0.U)  // #word, i.e., arlen in AXI
 
       // to keep L1 miss & L2 hit penalty small, inner axi bus width should be as large as possible
       // on loongson and zedboard, outer axi bus width are usually 32bit
@@ -494,7 +496,9 @@ with HasControlPlaneParameters
       /** Log with nothing added */
       def log_plain(fmt: String, args: Bits*) = log_raw("", fmt, "", args:_*)
 
-
+      when (in.b.fire() || in.c.fire() || in.e.fire()) {
+        assert(Bool(false), "Inner tilelink Unexpected handshake")
+      }
 
       when (out.a.fire()) {
         log("out.a.opcode %x, dsid %x, param %x, size %x, source %x, address %x, mask %x, data %x",
@@ -529,7 +533,7 @@ with HasControlPlaneParameters
 
       val start_beat = s1_in.address(innerBeatMSB, innerBeatLSB)
       val inner_end_beat_reg = Reg(UInt(4.W))
-      val inner_end_beat = Mux(state === s_idle, start_beat + 7.U, inner_end_beat_reg)
+      val inner_end_beat = Mux(state === s_idle, start_beat + s1_in.in_len, inner_end_beat_reg)
 
       val merge_curr_beat = RegInit(0.asUInt(log2Ceil(8).W))
       val merge_last_beat = merge_curr_beat === inner_end_beat
@@ -551,7 +555,7 @@ with HasControlPlaneParameters
         s1_in := TL2CacheInput.io.cache_s0.req
         state := s_tag_read_req
         merge_curr_beat := start_beat
-        inner_end_beat_reg := start_beat + 7.U
+        inner_end_beat_reg := start_beat + TL2CacheInput.io.cache_s0.req.in_len
       }
 
       val s3_valid = Wire(init = Bool(false))
