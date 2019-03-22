@@ -360,8 +360,8 @@ class TLCacheConvertorOut(params: TLBundleParameters, dsidWidth: Int) extends Mo
   }
 
   when (convertor_out_debug) {
-    when (rf_state =/= rf_idle && rf_state =/= rf_do_ram_read) {
-      printf("cycle%d rf_state%x, rf_addr_valid%x, rf_data_valid%x, a_valid%x, a_ready%x, d_valid%x, d_ready%x rf_mem_cnt%x, data %x \n",
+    when (rf_state =/= rf_idle && rf_state =/= rf_do_ram_read || (out_rdata_fire)) {
+      printf("cycle%d [out rf] rf_state%x, rf_addr_valid%x, rf_data_valid%x, a_valid%x, a_ready%x, d_valid%x, d_ready%x rf_mem_cnt%x, data %x \n",
         GTimer(),
         rf_state,
         io.rf_addr_valid, io.rf_data_valid,
@@ -371,7 +371,7 @@ class TLCacheConvertorOut(params: TLBundleParameters, dsidWidth: Int) extends Mo
       )
     }
     when (wb_state =/= wb_idle) {
-      printf("cycle%d wb_state%x no_wb_req%x\n",
+      printf("cycle%d [out wb] wb_state%x no_wb_req%x\n",
         GTimer(), wb_state, no_wb_req
       )
     }
@@ -850,6 +850,8 @@ with HasControlPlaneParameters
       when (state === s_merge_put_data) {
         merge_curr_beat := merge_curr_beat + 1.U
         val idx = merge_curr_beat
+        //log("[debug merge] put_data_buf %x / %x, data_buf %x, currbeat%x, lastbeat%x",
+            s1_in.data(idx), s1_in.mask(idx), data_buf(idx), merge_curr_beat, merge_last_beat)
         data_buf(idx) := mergePutData(data_buf(idx), s1_in.data(idx), s1_in.mask(idx))
         when (merge_last_beat) {
           state := s_data_write
