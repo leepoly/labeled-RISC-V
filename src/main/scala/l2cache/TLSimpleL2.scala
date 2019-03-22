@@ -77,7 +77,7 @@ class TLCacheConvertorIn(params: TLBundleParameters, dsidWidth: Int) extends Mod
   }
   val s0_idle :: s0_gather_write_data :: s0_send_bresp :: s0_wait_cache_ready :: Nil = Enum(UInt(), 4)
   val s0_state = Reg(init = s0_idle)
-  val convertor_debug = Bool(true)
+  val convertor_debug = Bool(false)
 
   //cache only sees 64B per cycle
   val innerBeatSize = io.tl_in_d.bits.params.dataBits
@@ -88,14 +88,8 @@ class TLCacheConvertorIn(params: TLBundleParameters, dsidWidth: Int) extends Mod
   val innerBeatLSB = innerBeatBits
   val innerBeatMSB = innerBeatLSB + innerBeatIndexBits - 1
 
-  //val outerBeatSize = 64 * 8//io.out.d.bits.params.dataBits
-  //val outerBeatBytes = outerBeatSize / 8
-  //val outerDataBeats = blockSize / outerBeatSize
   val addrWidth = io.tl_in_a.bits.params.addressBits
   val innerIdWidth = io.tl_in_a.bits.params.sourceBits
-  //val split = innerBeatSize / outerBeatSize
-  //val splitBits = log2Ceil(split)
-  //require(isPow2(split))
 
   val in_opcode = io.tl_in_a.bits.opcode
   val in_dsid = io.tl_in_a.bits.dsid
@@ -163,8 +157,6 @@ class TLCacheConvertorIn(params: TLBundleParameters, dsidWidth: Int) extends Mod
       )
     }
   }
-  
-  
 
   // *** gather_wdata ***
   // s_gather_write_data:
@@ -303,7 +295,7 @@ class TLCacheConvertorOut(params: TLBundleParameters, dsidWidth: Int) extends Mo
   val rf_idle :: rf_wait_ram_ar :: rf_do_ram_read :: rf_wait_cache_ready :: Nil = Enum(UInt(), 4)
   val wb_state = Reg(init = wb_idle)
   val rf_state = Reg(init = rf_idle)
-  val convertor_out_debug = Bool(true)
+  val convertor_out_debug = Bool(false)
 
   //writeback
   val wb_addr_buf = Reg(UInt(width = params.addressBits.W))
@@ -370,11 +362,11 @@ class TLCacheConvertorOut(params: TLBundleParameters, dsidWidth: Int) extends Mo
         io.tl_out_d.bits.data
       )
     }
-    when (wb_state =/= wb_idle) {
-      printf("cycle%d [out wb] wb_state%x no_wb_req%x\n",
-        GTimer(), wb_state, no_wb_req
-      )
-    }
+    // when (wb_state =/= wb_idle) {
+    //   printf("cycle%d [out wb] wb_state%x no_wb_req%x\n",
+    //     GTimer(), wb_state, no_wb_req
+    //   )
+    // }
   }
 
   //outer wire
@@ -411,8 +403,8 @@ with HasControlPlaneParameters
     println(s"bankid=$bankid")
     val nWays = p(NL2CacheWays)
     println(s"nWays = $nWays")
-    //val nBanks = p(NBanksPerMemChannel)
-    val nSets = p(NL2CacheCapacity) * 1024 / 64 / nWays /// nBanks
+    val nBanks = p(NBanksPerMemChannel)
+    val nSets = p(NL2CacheCapacity) * 1024 / 64 / nWays / nBanks
     println(s"nSets = $nSets")
     val cp = IO(new CPToL2CacheIO().flip())
     (node.in zip node.out) foreach { case ((in, edgeIn), (out, edgeOut)) =>
@@ -453,13 +445,13 @@ with HasControlPlaneParameters
 
       val indexBits = log2Ceil(nSets)
       val blockOffsetBits = log2Ceil(blockBytes)
-      //val bankBits = log2Ceil(nBanks)
-      val tagBits = addrWidth - indexBits - blockOffsetBits //- bankBits
+      val bankBits = log2Ceil(nBanks)
+      val tagBits = addrWidth - indexBits - blockOffsetBits - bankBits
       val offsetLSB = 0
       val offsetMSB = blockOffsetBits - 1
-      //val bankLSB = offsetMSB + 1
-      //val bankMSB = bankLSB + bankBits - 1
-      val indexLSB = offsetMSB + 1 //bank
+      val bankLSB = offsetMSB + 1
+      val bankMSB = bankLSB + bankBits - 1
+      val indexLSB = bankMSB + 1
       val indexMSB = indexLSB + indexBits - 1
       val tagLSB = indexMSB + 1
       val tagMSB = tagLSB + tagBits - 1
@@ -507,9 +499,6 @@ with HasControlPlaneParameters
       // state transitions:
       // s_idle: idle state
       // capture requests
-      // CheckOneHot(Seq(in.ar.fire(), in.aw.fire(), in.r.fire(), in.w.fire(), in.b.fire()))
-      //LYW
-
       val s1_in = Reg(new L2CacheReq(edgeIn.bundle, dsidWidth))
       val TL2CacheInput = Module(new TLCacheConvertorIn(edgeIn.bundle, dsidWidth))
 
@@ -599,7 +588,7 @@ with HasControlPlaneParameters
 
 
       val idx = s1_in.address(indexMSB, indexLSB)
-      //val bank = addr(bankMSB, bankLSB)
+      val bank = addr(bankMSB, bankLSB)
 
       val meta_array_wen = rst || state === s_tag_read
       val read_tag_req = (state === s_tag_read_req)
@@ -623,9 +612,6 @@ with HasControlPlaneParameters
       val tag_rdata_reg = Reg(Vec(nWays, UInt(width = tagBits.W)))
       val curr_state_reg = Reg(Bits(width = nWays))
       val set_dsids_reg = Reg(Vec(nWays, UInt(width = dsidWidth.W)))
-
-      // val set_first_access_flag = RegInit(Vec(Seq.fill(nSets){ Bool(true) }))
-      // val init_state = ((1 << nWays) - 1).U(nWays.W)
 
       when (state === s_tag_read_resp) {
         state := s_tag_read
@@ -651,7 +637,7 @@ with HasControlPlaneParameters
 
 
       cp.dsid := s1_in.dsid
-      val curr_mask = cp.waymask //0xFFFF.U
+      val curr_mask = cp.waymask
       val repl_way = Mux((curr_state_reg & curr_mask).orR, PriorityEncoder(curr_state_reg & curr_mask),
         Mux(curr_mask.orR, PriorityEncoder(curr_mask), UInt(0)))
       val repl_dsid = set_dsids_reg(repl_way)
@@ -668,8 +654,7 @@ with HasControlPlaneParameters
       // valid and dirty
       val need_writeback = vb_rdata_reg(repl_way) && db_rdata_reg(repl_way)
       val writeback_tag = tag_rdata_reg(repl_way)
-      //val writeback_addr = Cat(writeback_tag, Cat(idx, Cat(bank, 0.U(blockOffsetBits.W))))
-      val writeback_addr = Cat(writeback_tag, Cat(idx, 0.U(blockOffsetBits.W)))
+      val writeback_addr = Cat(writeback_tag, Cat(idx, Cat(bank, 0.U(blockOffsetBits.W))))
 
       val read_miss_writeback = read_miss && need_writeback
       val read_miss_no_writeback = read_miss && !need_writeback
@@ -875,8 +860,7 @@ with HasControlPlaneParameters
       // external memory bus width is 32/64/128bits
       // so each memport read/write is mapped into a whole tilelink bus width read/write
       //val axi4_size = log2Up(outerBeatBytes).U
-      //val mem_addr = Cat(addr(tagMSB, bankLSB), 0.asUInt(blockOffsetBits.W))
-      val mem_addr = Cat(s1_in.address(tagMSB, indexLSB), 0.asUInt(blockOffsetBits.W))
+      val mem_addr = Cat(addr(tagMSB, bankLSB), 0.asUInt(blockOffsetBits.W))
 
       val out_raddr_fire = out.a.fire()
       val out_waddr_fire = out.a.fire()
@@ -905,27 +889,6 @@ with HasControlPlaneParameters
         state := s_wait_ram_arready // also wb_valid -> false
       }
 
-
-      // when (state === s_wait_ram_awready) {
-      //   state := s_do_ram_write
-      // }
-
-      // val (wb_cnt, wb_done) = Counter(out_wdata_fire && state === s_do_ram_write, outerDataBeats)
-      // when (state === s_do_ram_write && wb_done) {
-      //   state := s_wait_ram_bresp
-      // }
-
-      // val out_write_valid = state === s_do_ram_write
-
-      // when (state === s_wait_ram_bresp && out_wreq_fire) {
-      //   when (read_miss_writeback || write_miss_writeback) {
-      //     // do refill
-      //     state := s_wait_ram_arready
-      //   } .otherwise {
-      //     assert(N, "Unexpected condition in s_wait_ram_bresp")
-      //   }
-      // }
-
       // #####################################################
       // #                  refill path                      #
       // #####################################################
@@ -941,45 +904,6 @@ with HasControlPlaneParameters
           state := s_merge_put_data
         }
       }
-
-      // when (state === s_wait_ram_arready && out_raddr_fire) {
-      //   state := s_do_ram_read
-      // }
-      // val (refill_cnt, refill_done) = Counter(out_rdata_fire && state === s_do_ram_read, outerDataBeats)
-      // when (state === s_do_ram_read && out_rdata_fire) {
-      //   data_buf(refill_cnt) := out_rdata
-      //   when (refill_done) {
-      //     when (ren) {
-      //       state := s_data_write
-      //     } .otherwise {
-      //       state := s_merge_put_data
-      //     }
-      //   }
-      // }
-
-      // val out_read_valid = state === s_wait_ram_arready
-
-      // val out_data = data_buf(wb_cnt)
-      // val out_addr = Mux(out_read_valid, mem_addr, writeback_addr)
-      // val out_opcode = Mux(out_read_valid, TLMessages.Get, TLMessages.PutFullData)
-
-      // out.a.bits.opcode  := out_opcode
-      // out.a.bits.dsid    := s1_in.dsid
-      // out.a.bits.param   := UInt(0)
-      // out.a.bits.size    := outerBurstLen.U
-      // out.a.bits.source  := 0.asUInt(outerIdWidth.W)
-      // out.a.bits.address := out_addr
-      // out.a.bits.mask    := edgeOut.mask(out_addr, outerBurstLen.U)
-      // //printf("[debug] mask %x \n", out.a.bits.mask)
-
-      // out.a.bits.data    := out_data
-      // out.a.bits.corrupt := Bool(false)
-      // //edgeOut.Put(0.asUInt(outerIdWidth.W), out_addr, outerBeatLen.U, out_data)
-      
-      // out.a.valid := out_write_valid || out_read_valid
-
-      // // read data channel signals
-      // out.d.ready := (state === s_do_ram_read) || (state === s_wait_ram_bresp)
 
       // ########################################################
       // #                  data resp path                      #

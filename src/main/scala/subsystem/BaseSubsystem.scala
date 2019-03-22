@@ -69,6 +69,7 @@ abstract class BaseSubsystem(implicit p: Parameters) extends BareSubsystem {
     val mbus = LazyModule(new MemoryBus(mbusParams, channel, nMemoryChannels, nBanks)(p))
     for (bank <- 0 until nBanksPerChannel) {
       ForceFanout(a = true) { implicit p => sbus.toMemoryBus { in } }
+      println(s"connect L2 bank:$bank")
       mbus.coupleFrom(s"coherence_manager_bank_$bank") {
         _ := l2nodes(bank) := TLFilter(TLFilter.mSelectIntersect(mbus.bankFilter(bank))) := out
       }
