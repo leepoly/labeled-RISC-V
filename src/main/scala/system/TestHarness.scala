@@ -32,7 +32,7 @@ class TestHarness()(implicit p: Parameters) extends Module {
   dut.connectSimAXIMMIO()
   Debug.connectDebug(dut.debug, clock, reset, io.success)
 
-  val enableFrontBusTraffic = false
+  val enableFrontBusTraffic = true
   val frontBusAccessAddr = 0x10000fc00L
 
   if (!enableFrontBusTraffic) {

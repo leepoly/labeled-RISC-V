@@ -850,7 +850,7 @@ with HasControlPlaneParameters
       when (state === s_merge_put_data) {
         merge_curr_beat := merge_curr_beat + 1.U
         val idx = merge_curr_beat
-        //log("[debug merge] put_data_buf %x / %x, data_buf %x, currbeat%x, lastbeat%x",
+        log("[debug merge] put_data_buf %x / %x, data_buf %x, currbeat%x, lastbeat%x",
             s1_in.data(idx), s1_in.mask(idx), data_buf(idx), merge_curr_beat, merge_last_beat)
         data_buf(idx) := mergePutData(data_buf(idx), s1_in.data(idx), s1_in.mask(idx))
         when (merge_last_beat) {
