@@ -279,6 +279,7 @@ class TLCacheConvertorOut(params: TLBundleParameters, dsidWidth: Int) extends Mo
     //refill
     val rf_addr = Input(UInt(width = params.addressBits.W))
     val rf_data = Output(Vec(blockSize / params.dataBits, UInt(params.dataBits.W)))
+    val rf_data_mask = Input(UInt((params.dataBits/8).W))
     val rf_addr_valid = Input(Bool())
     val rf_data_valid = Output(Bool())
     val rf_ready = Input(Bool())
@@ -387,7 +388,7 @@ class TLCacheConvertorOut(params: TLBundleParameters, dsidWidth: Int) extends Mo
   io.tl_out_a.bits.size    := outerBurstLen.U
   io.tl_out_a.bits.source  := 0.asUInt(params.sourceBits.W)
   io.tl_out_a.bits.address := out_addr
-  io.tl_out_a.bits.mask    := 0xff.U //edgeOut.mask(out_addr, outerBurstLen.U)
+  io.tl_out_a.bits.mask    := io.rf_data_mask
   io.tl_out_a.bits.data    := out_data
   io.tl_out_a.bits.corrupt := Bool(false)
 
@@ -500,18 +501,6 @@ with HasControlPlaneParameters
         assert(Bool(false), "Inner tilelink Unexpected handshake")
       }
 
-      when (out.a.fire()) {
-        log("out.a.opcode %x, dsid %x, param %x, size %x, source %x, address %x, mask %x, data %x",
-          out.a.bits.opcode,
-          out.a.bits.dsid,
-          out.a.bits.param,
-          out.a.bits.size,
-          out.a.bits.source,
-          out.a.bits.address,
-          out.a.bits.mask,
-          out.a.bits.data)
-      }
-
       //val in_send_id = in.d.bits.source
       //val in_send_opcode = in.d.bits.opcode
 
@@ -531,12 +520,15 @@ with HasControlPlaneParameters
       val ren = s1_in.opcode === TLMessages.Get
       val wen = s1_in.opcode === TLMessages.PutFullData || s1_in.opcode === TLMessages.PutPartialData
 
-      val start_beat = s1_in.address(innerBeatMSB, innerBeatLSB)
+      val start_beat = TL2CacheInput.io.cache_s0.req.address(innerBeatMSB, innerBeatLSB)
       val inner_end_beat_reg = Reg(UInt(4.W))
       val inner_end_beat = Mux(state === s_idle, start_beat + s1_in.in_len, inner_end_beat_reg)
 
       val merge_curr_beat = RegInit(0.asUInt(log2Ceil(8).W))
       val merge_last_beat = merge_curr_beat === inner_end_beat
+
+      // log("[debug] addr %x, start_beat%x, inlen%x, end_beat%x, end_beat_reg%x, innerDataBeats%x",
+      //   addr, start_beat, s1_in.in_len, inner_end_beat, inner_end_beat_reg, innerDataBeats.U)
 
       TL2CacheInput.io.tl_in_a.bits := in.a.bits
       TL2CacheInput.io.tl_in_a_valid := in.a.valid
@@ -550,6 +542,19 @@ with HasControlPlaneParameters
       val s1_valid = TL2CacheInput.io.cache_s0.valid
       TL2CacheInput.io.cache_rst := rst
       TL2CacheInput.io.cache_s0.ready := s1_ready
+
+      when (out.a.fire()) {
+        log("out.a.opcode %x, dsid %x, param %x, size %x, source %x, address %x, mask %x, data %x s1_len%x",
+          out.a.bits.opcode,
+          out.a.bits.dsid,
+          out.a.bits.param,
+          out.a.bits.size,
+          out.a.bits.source,
+          out.a.bits.address,
+          out.a.bits.mask,
+          out.a.bits.data,
+          s1_in.in_len)
+      }
 
       when (s1_valid && s1_ready) {
         s1_in := TL2CacheInput.io.cache_s0.req
@@ -924,6 +929,7 @@ with HasControlPlaneParameters
       // #####################################################
       TL2CacheOutput.io.rf_addr := mem_addr
       TL2CacheOutput.io.rf_addr_valid := state === s_wait_ram_arready
+      TL2CacheOutput.io.rf_data_mask := edgeOut.mask(mem_addr, outerBurstLen.U)
       TL2CacheOutput.io.rf_ready := state === s_wait_ram_arready
       when (TL2CacheOutput.io.rf_ready && TL2CacheOutput.io.rf_data_valid) {
         data_buf := TL2CacheOutput.io.rf_data
