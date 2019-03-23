@@ -301,7 +301,7 @@ class TLCacheConvertorOut(params: TLBundleParameters, dsidWidth: Int) extends Mo
   val wb_addr_buf = Reg(UInt(width = params.addressBits.W))
   val wb_data_buf = Reg(Vec(blockSize / params.dataBits, UInt(params.dataBits.W)))
   when (wb_state === wb_idle && io.wb_valid) {
-    wb_state := wb_wait_ram_awready
+    wb_state := wb_do_ram_write
     wb_addr_buf := io.wb_addr
     wb_data_buf := io.wb_data
     when (convertor_out_debug) {
@@ -313,9 +313,9 @@ class TLCacheConvertorOut(params: TLBundleParameters, dsidWidth: Int) extends Mo
         )
     }
   }
-  when (wb_state === wb_wait_ram_awready) {
-    wb_state := wb_do_ram_write //there is one useless extra cycle...
-  }
+  // when (wb_state === wb_wait_ram_awready) {
+  //   wb_state := wb_do_ram_write //there is one useless extra cycle...
+  // }
   val (wb_cnt, wb_done) = Counter(out_wdata_fire && wb_state === wb_do_ram_write, outerDataBeats)
   when (wb_state === wb_do_ram_write && wb_done) {
     wb_state := wb_wait_ram_bresp
@@ -908,10 +908,10 @@ with HasControlPlaneParameters
       // ########################################################
       // #                  data resp path                      #
       // ########################################################
-      //val cache_s3 = Reg(new L2CacheReq(edgeIn.bundle, dsidWidth))
+      val cache_s3 = Reg(new L2CacheReq(edgeIn.bundle, dsidWidth))
       
-      //cache_s3 := s1_in //because there is no real pipeline so far
-      TL2CacheInput.io.cache_s3.req := s1_in //cache_s3
+      cache_s3 := s1_in //because there is no real pipeline so far
+      TL2CacheInput.io.cache_s3.req := cache_s3 //s1_in //
       TL2CacheInput.io.cache_s3.req.data := data_buf
       TL2CacheInput.io.cache_s3.valid := s3_valid
 
