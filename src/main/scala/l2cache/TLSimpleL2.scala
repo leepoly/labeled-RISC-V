@@ -458,7 +458,7 @@ with HasControlPlaneParameters
       val rst = (rst_cnt < UInt(2 * nSets)) && !reset.toBool
       when (rst) { rst_cnt := rst_cnt + 1.U }
 
-      val s_idle :: s_gather_write_data :: s_send_bresp :: s_update_meta :: s_tag_read_req :: s_tag_read_resp :: s_tag_read :: s_merge_put_data :: s_data_read :: s_data_write :: s_wait_ram_awready :: s_do_ram_write :: s_wait_ram_bresp :: s_wait_ram_arready :: s_do_ram_read :: s_data_resp :: Nil = Enum(UInt(), 16)
+      val s_idle :: s_gather_write_data :: s_send_bresp :: s_update_meta :: s_tag_read_req :: s_tag_read_resp :: s_tag_read :: s_merge_put_data :: s_data_read_req :: s_data_read :: s_data_write :: s_wait_ram_awready :: s_do_ram_write :: s_wait_ram_bresp :: s_wait_ram_arready :: s_do_ram_read :: s_data_resp :: Nil = Enum(UInt(), 17)
 
       val state = Reg(init = s_idle)
       // state transitions for each case
@@ -495,7 +495,13 @@ with HasControlPlaneParameters
       // capture requests
       val s1_in = Reg(new L2CacheReq(edgeIn.bundle, dsidWidth))
       val TL2CacheInput = Module(new TLCacheConvertorIn(edgeIn.bundle, dsidWidth))
-
+      val cache_s2 = Reg(new L2CacheReq(edgeIn.bundle, dsidWidth))
+      val s2_ready = Bool(true) // TODO pipeline setting
+      val cache_s3 = Reg(new L2CacheReq(edgeIn.bundle, dsidWidth))
+      val s3_valid = Wire(init = Bool(false))
+      val s3_ready = Bool(true) //TODO pipeline setting
+      val s3_ren = cache_s3.opcode === TLMessages.Get
+      
       val s1_addr = s1_in.address
       val s1_id = s1_in.source
       val s1_opcode = s1_in.opcode
@@ -643,12 +649,12 @@ with HasControlPlaneParameters
       val need_data_read = read_hit || write_hit || read_miss_writeback || write_miss_writeback
 
       when (state === s_tag_read) {
-        log("hit: %d s1_idx: %x curr_state_reg: %x waymask: %x hit_way: %x repl_way: %x", hit, s1_idx, curr_state_reg, curr_mask, hit_way, repl_way)
+        log("hit: %d s1_idx: %d curr_state_reg: %x waymask: %x hit_way: %x repl_way: %x", hit, s1_idx, curr_state_reg, curr_mask, hit_way, repl_way)
         when (s1_ren) {
-          log_part("read addr: %x s1_idx: %d tag: %x hit: %d ", s1_addr, s1_idx, s1_tag, hit)
+          log_part("read addr: %x tag: %x hit: %d ", s1_addr, s1_tag, hit)
         }
-        when (s1_ren) {
-          log_part("write addr: %x s1_idx: %d tag: %x hit: %d ", s1_addr, s1_idx, s1_tag, hit)
+        when (s1_wen) {
+          log_part("write addr: %x tag: %x hit: %d ", s1_addr, s1_tag, hit)
         }
         when (hit) {
           log_plain("[hit] hit_way: %d\n", hit_way)
@@ -663,11 +669,14 @@ with HasControlPlaneParameters
         // check for cross cache line bursts
         //assert(inner_end_beat < innerDataBeats.U, s"cross cache line bursts detected  inner_end_beat$inner_end_beat < innerDataBeats${innerDataBeats.U} addr$addr")
 
-        when (read_hit || write_hit || read_miss_writeback || write_miss_writeback) {
+        when ((read_hit || write_hit || read_miss_writeback || write_miss_writeback) && s2_ready) {
           state := s_data_read
-        } .elsewhen (read_miss_no_writeback || write_miss_no_writeback) {
+          cache_s2 := s1_in
+        } .elsewhen ((read_miss_no_writeback || write_miss_no_writeback) && s3_ready) {
           // no need to write back, directly refill data
+          // here I want to make a dynamic pipeline control, to just skip stage2
           state := s_wait_ram_arready
+          cache_s3 := s1_in
         } .otherwise {
           assert(N, s"Unexpected condition in s_tag_read read_hit$read_hit write_hit$write_hit state$state")
         }
@@ -715,10 +724,10 @@ with HasControlPlaneParameters
         metadata.rr_state := next_state(i)
       }
 
-      when (state === s_tag_read) {
-        val fmt_part = Seq.tabulate(dsid_occupacy.size) { _ + ": %d" }.mkString(", ")
-        log("dsid_occ = " + fmt_part, dsid_occupacy: _*)
-      }
+      // when (state === s_tag_read) {
+      //   val fmt_part = Seq.tabulate(dsid_occupacy.size) { _ + ": %d" }.mkString(", ")
+      //   log("dsid_occ = " + fmt_part, dsid_occupacy: _*)
+      // }
 
       val meta_array_widx = Mux(rst, rst_cnt, s1_idx)
       val meta_array_wdata = Mux(rst, rst_metadata, update_metadata)
@@ -739,25 +748,37 @@ with HasControlPlaneParameters
           when (victim_valid) {
             log("victim dsid %d dec way %d old_value %d", repl_dsid, repl_way, victim_occupacy)
           }
-          log("dsid %d inc way %d old_value %d", s1_in.dsid, update_way, requester_occupacy)
+          //log("dsid %d inc way %d old_value %d", s1_in.dsid, update_way, requester_occupacy)
         }
       }
 
       // ###############################################################
       // #                  data array read/write                      #
       // ###############################################################
+      val s2_idx = cache_s2.address(indexMSB, indexLSB)
+      val s3_idx = cache_s3.address(indexMSB, indexLSB)
       val data_read_way = Mux(read_hit || write_hit, hit_way, repl_way)
       // incase it overflows
       val data_read_cnt = RegInit(0.asUInt((log2Ceil(innerDataBeats) + 1).W))
-      val data_read_valid = (state === s_tag_read && need_data_read) || (state === s_data_read && data_read_cnt =/= innerDataBeats.U)
-      val data_read_idx = s1_idx << log2Ceil(innerDataBeats) | data_read_cnt
+      val data_read_valid = (state === s_data_read && data_read_cnt =/= innerDataBeats.U)
+      val data_read_idx = s2_idx << log2Ceil(innerDataBeats) | data_read_cnt
       val dout = Wire(Vec(split, UInt(outerBeatSize.W)))
 
       val data_write_way = Mux(write_hit, hit_way, repl_way)
       val data_write_cnt = Wire(UInt())
       val data_write_valid = state === s_data_write
-      val data_write_idx = s1_idx << log2Ceil(innerDataBeats) | data_write_cnt
+      val data_write_idx = s3_idx << log2Ceil(innerDataBeats) | data_write_cnt
       val din = Wire(Vec(split, UInt(outerBeatSize.W)))
+
+      when (GTimer() < 40000.U && GTimer() > 20000.U) {
+        log("s1_addr %x, s2_addr %x, s3_addr %x, s2_idx %d s3_idx %d",
+        s1_in.address,
+        cache_s2.address,
+        cache_s3.address,
+        s2_idx,
+        s3_idx)
+      }
+      
 
       val data_arrays = Seq.fill(split) {
         DescribedSRAM(
@@ -780,6 +801,7 @@ with HasControlPlaneParameters
 
       // s_data_read
       // read miss or need write back
+      // stage 3: writeback, refill, merge wdata, data resp
       val data_buf = Reg(Vec(outerDataBeats, UInt(outerBeatSize.W)))
       when (data_read_valid) {
         data_read_cnt := data_read_cnt + 1.U
@@ -790,12 +812,15 @@ with HasControlPlaneParameters
         }
         when (data_read_cnt === innerDataBeats.U) {
           data_read_cnt := 0.U
-          when (read_hit) {
+          when (read_hit && s3_ready) {
             state := s_data_resp
-          } .elsewhen (read_miss_writeback || write_miss_writeback) {
+            cache_s3 := cache_s2
+          } .elsewhen ((read_miss_writeback || write_miss_writeback) & s3_ready) {
             state := s_wait_ram_awready
-          } .elsewhen (write_hit) {
+            cache_s3 := cache_s2
+          } .elsewhen ((write_hit) && s3_ready) {
             state := s_merge_put_data
+            cache_s3 := cache_s2
           } .otherwise {
             assert(N, "Unexpected condition in s_data_read")
           }
@@ -813,10 +838,10 @@ with HasControlPlaneParameters
       when (state === s_merge_put_data) {
         for (merge_idx <- 0 until outerDataBeats) {
           val idx = merge_idx.U
-          when (idx <= s1_in.in_len) {
-            data_buf(idx) := mergePutData(data_buf(idx), s1_in.data(idx), s1_in.mask(idx))
+          when (idx <= cache_s3.in_len) {
+            data_buf(idx) := mergePutData(data_buf(idx), cache_s3.data(idx), cache_s3.mask(idx))
             log("[merge] put_data_buf %x / %x, data_buf %x, addr %x, currbeat%x, lastbeat%x",
-              s1_in.data(idx), s1_in.mask(idx), data_buf(idx), s1_in.address, idx , s1_in.in_len)
+              cache_s3.data(idx), cache_s3.mask(idx), data_buf(idx), cache_s3.address, idx , cache_s3.in_len)
           }
         }
         state := s_data_write
@@ -828,7 +853,7 @@ with HasControlPlaneParameters
       din(data_write_cnt) := data_buf(data_write_cnt)
       
       when (state === s_data_write && write_done) {
-        when (s1_ren) {
+        when (s3_ren) {
           state := s_data_resp
         } .otherwise {
           state := s_idle
@@ -838,8 +863,8 @@ with HasControlPlaneParameters
       // outer tilelink interface
       // external memory bus width is 32/64/128bits
       // so each memport read/write is mapped into a whole tilelink bus width read/write
-      val mem_addr = Cat(s1_addr(tagMSB, indexLSB), 0.asUInt(blockOffsetBits.W))
-      //val mem_addr = Cat(s1_addr(tagMSB, bankLSB), 0.asUInt(blockOffsetBits.W))
+      val s3_mem_addr = Cat(cache_s3.address(tagMSB, indexLSB), 0.asUInt(blockOffsetBits.W))
+      //val mem_addr = Cat(cache_s3.address(tagMSB, bankLSB), 0.asUInt(blockOffsetBits.W))
 
       // #########################################################
       // #                  write back path                      #
@@ -865,13 +890,13 @@ with HasControlPlaneParameters
       // #####################################################
       // #                  refill path                      #
       // #####################################################
-      TL2CacheOutput.io.rf_addr := mem_addr
+      TL2CacheOutput.io.rf_addr := s3_mem_addr
       TL2CacheOutput.io.rf_addr_valid := state === s_wait_ram_arready
-      TL2CacheOutput.io.rf_data_mask := edgeOut.mask(mem_addr, outerBurstLen.U)
+      TL2CacheOutput.io.rf_data_mask := edgeOut.mask(s3_mem_addr, outerBurstLen.U)
       TL2CacheOutput.io.rf_ready := state === s_wait_ram_arready
       when (TL2CacheOutput.io.rf_ready && TL2CacheOutput.io.rf_data_valid) {
         data_buf := TL2CacheOutput.io.rf_data
-        when (s1_ren) {
+        when (s3_ren) {
           state := s_data_write // also rf_ready turns false
         } .otherwise {
           state := s_merge_put_data
@@ -881,18 +906,14 @@ with HasControlPlaneParameters
       // ########################################################
       // #                  data resp path                      #
       // ########################################################
-      val s3_valid = Wire(init = Bool(false))
-      val s3_ready = TL2CacheInput.io.cache_s3.ready
-      val cache_s3 = Reg(new L2CacheReq(edgeIn.bundle, dsidWidth))
       
-      cache_s3 := s1_in //because there is no real pipeline so far
       TL2CacheInput.io.cache_s3.req := cache_s3
       TL2CacheInput.io.cache_s3.req.data := data_buf
       TL2CacheInput.io.cache_s3.valid := s3_valid
 
       when (state === s_data_resp) {
         s3_valid := Bool(true)
-        when (s3_ready) {
+        when (TL2CacheInput.io.cache_s3.ready) {
           state := s_idle
         }
       }
