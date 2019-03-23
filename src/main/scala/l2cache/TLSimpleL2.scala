@@ -207,7 +207,7 @@ class TLCacheConvertorIn(params: TLBundleParameters, dsidWidth: Int) extends Mod
   val data_resp = Wire(UInt(params.dataBits.W))
   data_resp := data_resp_buf(resp_curr_beat)
 
-  val in_read_ok = s3_state === s3_data_resp //data_resp is prior than accepting a req
+  val in_read_ok = s3_state === s3_data_resp //data_resp is superior to accepting a req
 
   when (io.cache_s3.valid && s3_state === s3_idle) {
     data_resp_buf := io.cache_s3.req.data
@@ -403,8 +403,8 @@ with HasControlPlaneParameters
     println(s"bankid=$bankid")
     val nWays = p(NL2CacheWays)
     println(s"nWays = $nWays")
-    val nBanks = p(NBanksPerMemChannel)
-    val nSets = p(NL2CacheCapacity) * 1024 / 64 / nWays / nBanks
+    //val nBanks = p(NBanksPerMemChannel)
+    val nSets = p(NL2CacheCapacity) * 1024 / 64 / nWays // / nBanks
     println(s"nSets = $nSets")
     val cp = IO(new CPToL2CacheIO().flip())
     (node.in zip node.out) foreach { case ((in, edgeIn), (out, edgeOut)) =>
@@ -436,22 +436,19 @@ with HasControlPlaneParameters
       val innerBeatLSB = innerBeatBits
       val innerBeatMSB = innerBeatLSB + innerBeatIndexBits - 1
 
-      //val in_len_shift = in.a.bits.size >= innerBeatBits.U
-      //val in_len  = Mux(in_len_shift, ((1.U << in.a.bits.size) >> innerBeatBits) - 1.U, 0.U)  // #word, i.e., arlen in AXI
-
       // to keep L1 miss & L2 hit penalty small, inner axi bus width should be as large as possible
       // on loongson and zedboard, outer axi bus width are usually 32bit
       // so we require that innerBeatSize to be multiples of outerBeatSize
 
       val indexBits = log2Ceil(nSets)
       val blockOffsetBits = log2Ceil(blockBytes)
-      val bankBits = log2Ceil(nBanks)
-      val tagBits = addrWidth - indexBits - blockOffsetBits - bankBits
+      //val bankBits = log2Ceil(nBanks)
+      val tagBits = addrWidth - indexBits - blockOffsetBits // - bankBits
       val offsetLSB = 0
       val offsetMSB = blockOffsetBits - 1
-      val bankLSB = offsetMSB + 1
-      val bankMSB = bankLSB + bankBits - 1
-      val indexLSB = bankMSB + 1
+      //val bankLSB = offsetMSB + 1
+      //val bankMSB = bankLSB + bankBits - 1
+      val indexLSB = offsetMSB + 1 // bankMSB + 1
       val indexMSB = indexLSB + indexBits - 1
       val tagLSB = indexMSB + 1
       val tagMSB = tagLSB + tagBits - 1
@@ -493,9 +490,6 @@ with HasControlPlaneParameters
         assert(Bool(false), "Inner tilelink Unexpected handshake")
       }
 
-      //val in_send_id = in.d.bits.source
-      //val in_send_opcode = in.d.bits.opcode
-
       // state transitions:
       // s_idle: idle state
       // capture requests
@@ -509,15 +503,12 @@ with HasControlPlaneParameters
       val ren = s1_in.opcode === TLMessages.Get
       val wen = s1_in.opcode === TLMessages.PutFullData || s1_in.opcode === TLMessages.PutPartialData
 
-      val start_beat = TL2CacheInput.io.cache_s0.req.address(innerBeatMSB, innerBeatLSB)
-      val inner_end_beat_reg = Reg(UInt(4.W))
-      val inner_end_beat = Mux(state === s_idle, start_beat + s1_in.in_len, inner_end_beat_reg)
+      //val start_beat = TL2CacheInput.io.cache_s0.req.address(innerBeatMSB, innerBeatLSB)
+      //val inner_end_beat_reg = Reg(UInt(4.W))
+      //val inner_end_beat = Mux(state === s_idle, start_beat + s1_in.in_len, inner_end_beat_reg)
 
-      val merge_curr_beat = RegInit(0.asUInt(log2Ceil(8).W))
-      val merge_last_beat = merge_curr_beat === inner_end_beat
-
-      // log("[debug] addr %x, start_beat%x, inlen%x, end_beat%x, end_beat_reg%x, innerDataBeats%x",
-      //   addr, start_beat, s1_in.in_len, inner_end_beat, inner_end_beat_reg, innerDataBeats.U)
+      //val merge_curr_beat = RegInit(0.asUInt(log2Ceil(8).W))
+      //val merge_last_beat = merge_curr_beat === inner_end_beat
 
       TL2CacheInput.io.tl_in_a.bits := in.a.bits
       TL2CacheInput.io.tl_in_a_valid := in.a.valid
@@ -548,8 +539,8 @@ with HasControlPlaneParameters
       when (s1_valid && s1_ready) {
         s1_in := TL2CacheInput.io.cache_s0.req
         state := s_tag_read_req
-        merge_curr_beat := start_beat
-        inner_end_beat_reg := start_beat + TL2CacheInput.io.cache_s0.req.in_len
+        //merge_curr_beat := start_beat
+        //inner_end_beat_reg := start_beat + TL2CacheInput.io.cache_s0.req.in_len
       }
 
       val s3_valid = Wire(init = Bool(false))
@@ -588,7 +579,7 @@ with HasControlPlaneParameters
 
 
       val idx = s1_in.address(indexMSB, indexLSB)
-      val bank = addr(bankMSB, bankLSB)
+      //val bank = addr(bankMSB, bankLSB)
 
       val meta_array_wen = rst || state === s_tag_read
       val read_tag_req = (state === s_tag_read_req)
@@ -654,7 +645,8 @@ with HasControlPlaneParameters
       // valid and dirty
       val need_writeback = vb_rdata_reg(repl_way) && db_rdata_reg(repl_way)
       val writeback_tag = tag_rdata_reg(repl_way)
-      val writeback_addr = Cat(writeback_tag, Cat(idx, Cat(bank, 0.U(blockOffsetBits.W))))
+      val writeback_addr = Cat(writeback_tag, Cat(idx, 0.U(blockOffsetBits.W)))
+      //val writeback_addr = Cat(writeback_tag, Cat(idx, Cat(bank, 0.U(blockOffsetBits.W))))
 
       val read_miss_writeback = read_miss && need_writeback
       val read_miss_no_writeback = read_miss && !need_writeback
@@ -682,7 +674,7 @@ with HasControlPlaneParameters
         log("s1 vb: %x db: %x", vb_rdata_reg, db_rdata_reg)
 
         // check for cross cache line bursts
-        assert(inner_end_beat < innerDataBeats.U, s"cross cache line bursts detected  inner_end_beat$inner_end_beat < innerDataBeats${innerDataBeats.U} addr$addr")
+        //assert(inner_end_beat < innerDataBeats.U, s"cross cache line bursts detected  inner_end_beat$inner_end_beat < innerDataBeats${innerDataBeats.U} addr$addr")
 
         when (read_hit || write_hit || read_miss_writeback || write_miss_writeback) {
           state := s_data_read
@@ -833,14 +825,22 @@ with HasControlPlaneParameters
         ((~full_wmask & old_data) | (full_wmask & new_data))
       }
       when (state === s_merge_put_data) {
-        merge_curr_beat := merge_curr_beat + 1.U
-        val idx = merge_curr_beat
-        log("[debug merge] put_data_buf %x / %x, data_buf %x, currbeat%x, lastbeat%x",
-            s1_in.data(idx), s1_in.mask(idx), data_buf(idx), merge_curr_beat, merge_last_beat)
-        data_buf(idx) := mergePutData(data_buf(idx), s1_in.data(idx), s1_in.mask(idx))
-        when (merge_last_beat) {
-          state := s_data_write
+        for (merge_idx <- 0 until outerDataBeats) {
+          val idx = merge_idx.U
+          when (idx <= s1_in.in_len) {
+            data_buf(idx) := mergePutData(data_buf(idx), s1_in.data(idx), s1_in.mask(idx))
+            log("[merge] put_data_buf %x / %x, data_buf %x, addr %x, currbeat%x, lastbeat%x",
+              s1_in.data(idx), s1_in.mask(idx), data_buf(idx), s1_in.address, idx , s1_in.in_len)
+          }
         }
+        state := s_data_write
+        // merge_curr_beat := merge_curr_beat + 1.U
+        // val idx = merge_curr_beat
+        
+        // data_buf(idx) := mergePutData(data_buf(idx), s1_in.data(idx), s1_in.mask(idx))
+        // when (merge_last_beat) {
+        //   state := s_data_write
+        // }
       }
 
       // s_data_write
@@ -859,15 +859,15 @@ with HasControlPlaneParameters
       // outer tilelink interface
       // external memory bus width is 32/64/128bits
       // so each memport read/write is mapped into a whole tilelink bus width read/write
-      //val axi4_size = log2Up(outerBeatBytes).U
-      val mem_addr = Cat(addr(tagMSB, bankLSB), 0.asUInt(blockOffsetBits.W))
+      val mem_addr = Cat(addr(tagMSB, indexLSB), 0.asUInt(blockOffsetBits.W))
+      //val mem_addr = Cat(addr(tagMSB, bankLSB), 0.asUInt(blockOffsetBits.W))
 
-      val out_raddr_fire = out.a.fire()
-      val out_waddr_fire = out.a.fire()
-      val out_wdata_fire = out.a.fire()
-      val out_wreq_fire = out.d.fire()
-      val out_rdata_fire = out.d.fire()
-      val out_rdata = out.d.bits.data
+      // val out_raddr_fire = out.a.fire()
+      // val out_waddr_fire = out.a.fire()
+      // val out_wdata_fire = out.a.fire()
+      // val out_wreq_fire = out.d.fire()
+      // val out_rdata_fire = out.d.fire()
+      // val out_rdata = out.d.bits.data
       // #########################################################
       // #                  write back path                      #
       // #########################################################
@@ -911,7 +911,7 @@ with HasControlPlaneParameters
       val cache_s3 = Reg(new L2CacheReq(edgeIn.bundle, dsidWidth))
       
       cache_s3 := s1_in //because there is no real pipeline so far
-      TL2CacheInput.io.cache_s3.req := cache_s3 //s1_in //
+      TL2CacheInput.io.cache_s3.req := cache_s3
       TL2CacheInput.io.cache_s3.req.data := data_buf
       TL2CacheInput.io.cache_s3.valid := s3_valid
 
