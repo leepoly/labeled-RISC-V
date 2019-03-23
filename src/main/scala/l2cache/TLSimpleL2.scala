@@ -496,19 +496,15 @@ with HasControlPlaneParameters
       val s1_in = Reg(new L2CacheReq(edgeIn.bundle, dsidWidth))
       val TL2CacheInput = Module(new TLCacheConvertorIn(edgeIn.bundle, dsidWidth))
 
-      val addr = s1_in.address
-      val id = s1_in.source
-      val opcode = s1_in.opcode
-      val dsid = s1_in.dsid
-      val ren = s1_in.opcode === TLMessages.Get
-      val wen = s1_in.opcode === TLMessages.PutFullData || s1_in.opcode === TLMessages.PutPartialData
-
-      //val start_beat = TL2CacheInput.io.cache_s0.req.address(innerBeatMSB, innerBeatLSB)
-      //val inner_end_beat_reg = Reg(UInt(4.W))
-      //val inner_end_beat = Mux(state === s_idle, start_beat + s1_in.in_len, inner_end_beat_reg)
-
-      //val merge_curr_beat = RegInit(0.asUInt(log2Ceil(8).W))
-      //val merge_last_beat = merge_curr_beat === inner_end_beat
+      val s1_addr = s1_in.address
+      val s1_id = s1_in.source
+      val s1_opcode = s1_in.opcode
+      val s1_dsid = s1_in.dsid
+      val s1_ren = s1_in.opcode === TLMessages.Get
+      val s1_wen = s1_in.opcode === TLMessages.PutFullData || s1_in.opcode === TLMessages.PutPartialData
+      
+      val s1_idx = s1_in.address(indexMSB, indexLSB)
+      //val bank = s1_addr(bankMSB, bankLSB)
 
       TL2CacheInput.io.tl_in_a.bits := in.a.bits
       TL2CacheInput.io.tl_in_a_valid := in.a.valid
@@ -539,17 +535,13 @@ with HasControlPlaneParameters
       when (s1_valid && s1_ready) {
         s1_in := TL2CacheInput.io.cache_s0.req
         state := s_tag_read_req
-        //merge_curr_beat := start_beat
-        //inner_end_beat_reg := start_beat + TL2CacheInput.io.cache_s0.req.in_len
       }
 
-      val s3_valid = Wire(init = Bool(false))
-      val s3_ready = TL2CacheInput.io.cache_s3.ready
       when (s1_ready && s1_valid) {
         val wire_opcode = TL2CacheInput.io.cache_s0.req.opcode
         val wire_ren = wire_opcode === TLMessages.Get
         val wire_wen = wire_opcode === TLMessages.PutFullData || wire_opcode === TLMessages.PutPartialData
-        log("opcode %x, dsid %x, size %x, source %x, address %x, mask %x, data %x, ren%x/wen%x s1_valid%x s1_ready%x s3_valid%x s3_ready%x",
+        log("opcode %x, dsid %x, size %x, source %x, address %x, mask %x, data %x, ren%x/wen%x s1_valid%x s1_ready%x",
           TL2CacheInput.io.cache_s0.req.opcode,
           TL2CacheInput.io.cache_s0.req.dsid,
           TL2CacheInput.io.cache_s0.req.size,
@@ -559,8 +551,7 @@ with HasControlPlaneParameters
           TL2CacheInput.io.cache_s0.req.data.asUInt,
           wire_ren, wire_wen,
           s1_valid,
-          s1_ready,
-          s3_valid, s3_ready
+          s1_ready
           )
       }
 
@@ -577,13 +568,9 @@ with HasControlPlaneParameters
         data = Vec(nWays, new MetadataEntry(tagBits, dsidWidth))
       )
 
-
-      val idx = s1_in.address(indexMSB, indexLSB)
-      //val bank = addr(bankMSB, bankLSB)
-
       val meta_array_wen = rst || state === s_tag_read
       val read_tag_req = (state === s_tag_read_req)
-      val meta_rdata = meta_array.read(idx, read_tag_req && !meta_array_wen)
+      val meta_rdata = meta_array.read(s1_idx, read_tag_req && !meta_array_wen)
 
       def wayMap[T <: Data](f: Int => T) = Vec((0 until nWays).map(f))
 
@@ -594,7 +581,7 @@ with HasControlPlaneParameters
       val set_dsids = wayMap((w: Int) => meta_rdata(w).dsid)
 
       when (state === s_tag_read_req) {
-        state := s_tag_read_resp
+        state := s_tag_read_resp // seems one extra cycle
       }
 
       // tag, valid, dirty response
@@ -614,14 +601,14 @@ with HasControlPlaneParameters
       }
 
       // check hit, miss, repl_way
-      val tag = s1_in.address(tagMSB, tagLSB)
-      val tag_eq_way = wayMap((w: Int) => tag_rdata_reg(w) === tag)
+      val s1_tag = s1_in.address(tagMSB, tagLSB)
+      val tag_eq_way = wayMap((w: Int) => tag_rdata_reg(w) === s1_tag)
       val tag_match_way = wayMap((w: Int) => tag_eq_way(w) && vb_rdata_reg(w)).asUInt
       val hit = tag_match_way.orR
-      val read_hit = hit && ren
-      val write_hit = hit && wen
-      val read_miss = !hit && ren
-      val write_miss = !hit && wen
+      val read_hit = hit && s1_ren
+      val write_hit = hit && s1_wen
+      val read_miss = !hit && s1_ren
+      val write_miss = !hit && s1_wen
       val hit_way = Wire(Bits())
       hit_way := Bits(0)
       (0 until nWays).foreach(i => when (tag_match_way(i)) { hit_way := Bits(i) })
@@ -645,8 +632,8 @@ with HasControlPlaneParameters
       // valid and dirty
       val need_writeback = vb_rdata_reg(repl_way) && db_rdata_reg(repl_way)
       val writeback_tag = tag_rdata_reg(repl_way)
-      val writeback_addr = Cat(writeback_tag, Cat(idx, 0.U(blockOffsetBits.W)))
-      //val writeback_addr = Cat(writeback_tag, Cat(idx, Cat(bank, 0.U(blockOffsetBits.W))))
+      val writeback_addr = Cat(writeback_tag, Cat(s1_idx, 0.U(blockOffsetBits.W)))
+      //val writeback_addr = Cat(writeback_tag, Cat(s1_idx, Cat(bank, 0.U(blockOffsetBits.W))))
 
       val read_miss_writeback = read_miss && need_writeback
       val read_miss_no_writeback = read_miss && !need_writeback
@@ -656,12 +643,12 @@ with HasControlPlaneParameters
       val need_data_read = read_hit || write_hit || read_miss_writeback || write_miss_writeback
 
       when (state === s_tag_read) {
-        log("hit: %d idx: %x curr_state_reg: %x waymask: %x hit_way: %x repl_way: %x", hit, idx, curr_state_reg, curr_mask, hit_way, repl_way)
-        when (ren) {
-          log_part("read addr: %x idx: %d tag: %x hit: %d ", addr, idx, tag, hit)
+        log("hit: %d s1_idx: %x curr_state_reg: %x waymask: %x hit_way: %x repl_way: %x", hit, s1_idx, curr_state_reg, curr_mask, hit_way, repl_way)
+        when (s1_ren) {
+          log_part("read addr: %x s1_idx: %d tag: %x hit: %d ", s1_addr, s1_idx, s1_tag, hit)
         }
-        when (wen) {
-          log_part("write addr: %x idx: %d tag: %x hit: %d ", addr, idx, tag, hit)
+        when (s1_ren) {
+          log_part("write addr: %x s1_idx: %d tag: %x hit: %d ", s1_addr, s1_idx, s1_tag, hit)
         }
         when (hit) {
           log_plain("[hit] hit_way: %d\n", hit_way)
@@ -697,7 +684,6 @@ with HasControlPlaneParameters
 
 
       // update metadata
-
       val update_way = Mux(hit, hit_way, repl_way)
       val next_state = Wire(Bits())
       when (state === s_tag_read) {
@@ -707,7 +693,7 @@ with HasControlPlaneParameters
           next_state := curr_state_reg.bitSet(update_way, Bool(false))
         }
         log("dsid: %d set: %d hit: %d rw: %d update_way: %d curr_state: %x next_state: %x",
-          s1_in.dsid, idx, hit, ren, update_way, curr_state_reg, next_state)
+          s1_in.dsid, s1_idx, hit, s1_ren, update_way, curr_state_reg, next_state)
       }
 
       val update_metadata = Wire(Vec(nWays, new MetadataEntry(tagBits, 16)))
@@ -718,7 +704,7 @@ with HasControlPlaneParameters
           metadata.valid := true.B
           metadata.dirty := Mux(read_hit, db_rdata_reg(update_way),
             Mux(read_miss, false.B, true.B))
-          metadata.tag := tag
+          metadata.tag := s1_tag
           metadata.dsid := s1_in.dsid
         } .otherwise {
           metadata.valid := vb_rdata_reg(i)
@@ -734,7 +720,7 @@ with HasControlPlaneParameters
         log("dsid_occ = " + fmt_part, dsid_occupacy: _*)
       }
 
-      val meta_array_widx = Mux(rst, rst_cnt, idx)
+      val meta_array_widx = Mux(rst, rst_cnt, s1_idx)
       val meta_array_wdata = Mux(rst, rst_metadata, update_metadata)
 
       when (meta_array_wen) {
@@ -764,13 +750,13 @@ with HasControlPlaneParameters
       // incase it overflows
       val data_read_cnt = RegInit(0.asUInt((log2Ceil(innerDataBeats) + 1).W))
       val data_read_valid = (state === s_tag_read && need_data_read) || (state === s_data_read && data_read_cnt =/= innerDataBeats.U)
-      val data_read_idx = idx << log2Ceil(innerDataBeats) | data_read_cnt
+      val data_read_idx = s1_idx << log2Ceil(innerDataBeats) | data_read_cnt
       val dout = Wire(Vec(split, UInt(outerBeatSize.W)))
 
       val data_write_way = Mux(write_hit, hit_way, repl_way)
       val data_write_cnt = Wire(UInt())
       val data_write_valid = state === s_data_write
-      val data_write_idx = idx << log2Ceil(innerDataBeats) | data_write_cnt
+      val data_write_idx = s1_idx << log2Ceil(innerDataBeats) | data_write_cnt
       val din = Wire(Vec(split, UInt(outerBeatSize.W)))
 
       val data_arrays = Seq.fill(split) {
@@ -834,13 +820,6 @@ with HasControlPlaneParameters
           }
         }
         state := s_data_write
-        // merge_curr_beat := merge_curr_beat + 1.U
-        // val idx = merge_curr_beat
-        
-        // data_buf(idx) := mergePutData(data_buf(idx), s1_in.data(idx), s1_in.mask(idx))
-        // when (merge_last_beat) {
-        //   state := s_data_write
-        // }
       }
 
       // s_data_write
@@ -849,7 +828,7 @@ with HasControlPlaneParameters
       din(data_write_cnt) := data_buf(data_write_cnt)
       
       when (state === s_data_write && write_done) {
-        when (ren) {
+        when (s1_ren) {
           state := s_data_resp
         } .otherwise {
           state := s_idle
@@ -859,15 +838,9 @@ with HasControlPlaneParameters
       // outer tilelink interface
       // external memory bus width is 32/64/128bits
       // so each memport read/write is mapped into a whole tilelink bus width read/write
-      val mem_addr = Cat(addr(tagMSB, indexLSB), 0.asUInt(blockOffsetBits.W))
-      //val mem_addr = Cat(addr(tagMSB, bankLSB), 0.asUInt(blockOffsetBits.W))
+      val mem_addr = Cat(s1_addr(tagMSB, indexLSB), 0.asUInt(blockOffsetBits.W))
+      //val mem_addr = Cat(s1_addr(tagMSB, bankLSB), 0.asUInt(blockOffsetBits.W))
 
-      // val out_raddr_fire = out.a.fire()
-      // val out_waddr_fire = out.a.fire()
-      // val out_wdata_fire = out.a.fire()
-      // val out_wreq_fire = out.d.fire()
-      // val out_rdata_fire = out.d.fire()
-      // val out_rdata = out.d.bits.data
       // #########################################################
       // #                  write back path                      #
       // #########################################################
@@ -898,7 +871,7 @@ with HasControlPlaneParameters
       TL2CacheOutput.io.rf_ready := state === s_wait_ram_arready
       when (TL2CacheOutput.io.rf_ready && TL2CacheOutput.io.rf_data_valid) {
         data_buf := TL2CacheOutput.io.rf_data
-        when (ren) {
+        when (s1_ren) {
           state := s_data_write // also rf_ready turns false
         } .otherwise {
           state := s_merge_put_data
@@ -908,6 +881,8 @@ with HasControlPlaneParameters
       // ########################################################
       // #                  data resp path                      #
       // ########################################################
+      val s3_valid = Wire(init = Bool(false))
+      val s3_ready = TL2CacheInput.io.cache_s3.ready
       val cache_s3 = Reg(new L2CacheReq(edgeIn.bundle, dsidWidth))
       
       cache_s3 := s1_in //because there is no real pipeline so far
