@@ -40,6 +40,8 @@ class L2CacheDecodeInfo(nWays: Int, addrWidth: Int) extends Bundle with L2CacheP
   val repl_way_reg = UInt(log2Ceil(nWays).W)
   val read_hit_reg = Bool()
   val write_hit_reg = Bool()
+  val read_miss_writeback_reg = Bool()
+  val write_miss_writeback_reg = Bool()
   val writeback_addr_reg = UInt(addrWidth.W)
   override def cloneType = new L2CacheDecodeInfo(nWays, addrWidth).asInstanceOf[this.type]
 }
@@ -647,12 +649,12 @@ with HasControlPlaneParameters
       val s1_writeback_addr = Cat(writeback_tag, Cat(s1_idx, 0.U(blockOffsetBits.W)))
       //val s1_writeback_addr = Cat(writeback_tag, Cat(s1_idx, Cat(bank, 0.U(blockOffsetBits.W))))
 
-      val read_miss_writeback = s1_read_miss && need_writeback
-      val read_miss_no_writeback = s1_read_miss && !need_writeback
-      val write_miss_writeback = s1_write_miss && need_writeback
-      val write_miss_no_writeback = s1_write_miss && !need_writeback
+      val s1_read_miss_writeback = s1_read_miss && need_writeback
+      val s1_read_miss_no_writeback = s1_read_miss && !need_writeback
+      val s1_write_miss_writeback = s1_write_miss && need_writeback
+      val s1_write_miss_no_writeback = s1_write_miss && !need_writeback
 
-      val need_data_read = s1_read_hit || s1_write_hit || read_miss_writeback || write_miss_writeback
+      val need_data_read = s1_read_hit || s1_write_hit || s1_read_miss_writeback || s1_write_miss_writeback
 
       when (state === s_tag_read) {
         log("hit: %d s1_idx: %d curr_state_reg: %x waymask: %x hit_way: %x repl_way: %x", s1_hit, s1_idx, curr_state_reg, curr_mask, s1_hit_way, s1_repl_way)
@@ -675,15 +677,17 @@ with HasControlPlaneParameters
         // check for cross cache line bursts
         //assert(inner_end_beat < innerDataBeats.U, s"cross cache line bursts detected  inner_end_beat$inner_end_beat < innerDataBeats${innerDataBeats.U} addr$addr")
 
-        when ((s1_read_hit || s1_write_hit || read_miss_writeback || write_miss_writeback) && s2_ready) {
+        when ((s1_read_hit || s1_write_hit || s1_read_miss_writeback || s1_write_miss_writeback) && s2_ready) {
           state := s_data_read
           s2_decode.hit_way_reg := s1_hit_way
           s2_decode.repl_way_reg := s1_repl_way
           s2_decode.write_hit_reg := s1_write_hit
           s2_decode.read_hit_reg := s1_read_hit
+          s2_decode.read_miss_writeback_reg := s1_read_miss_writeback
+          s2_decode.write_miss_writeback_reg := s1_write_miss_writeback
           s2_decode.writeback_addr_reg := s1_writeback_addr
           cache_s2 := s1_in
-        } .elsewhen ((read_miss_no_writeback || write_miss_no_writeback) && s3_ready) {
+        } .elsewhen ((s1_read_miss_no_writeback || s1_write_miss_no_writeback) && s3_ready) {
           // no need to write back, directly refill data
           // here I want to make a dynamic pipeline control, to just skip stage2
           state := s_wait_ram_arready
@@ -691,6 +695,8 @@ with HasControlPlaneParameters
           s3_decode.repl_way_reg := s1_repl_way
           s3_decode.write_hit_reg := s1_write_hit
           s3_decode.read_hit_reg := s1_read_hit
+          s3_decode.read_miss_writeback_reg := s1_read_miss_writeback
+          s3_decode.write_miss_writeback_reg := s1_write_miss_writeback
           s3_decode.writeback_addr_reg := s1_writeback_addr
           cache_s3 := s1_in
         } .otherwise {
@@ -773,14 +779,14 @@ with HasControlPlaneParameters
       // ###############################################################
       val s2_idx = cache_s2.address(indexMSB, indexLSB)
       val s3_idx = cache_s3.address(indexMSB, indexLSB)
-      val data_read_way = Mux(s1_read_hit || s1_write_hit, s1_hit_way, s1_repl_way)
+      val data_read_way = Mux(s2_decode.read_hit_reg || s2_decode.write_hit_reg, s2_decode.hit_way_reg, s2_decode.repl_way_reg)
       // incase it overflows
       val data_read_cnt = RegInit(0.asUInt((log2Ceil(innerDataBeats) + 1).W))
       val data_read_valid = (state === s_data_read && data_read_cnt =/= innerDataBeats.U)
       val data_read_idx = s2_idx << log2Ceil(innerDataBeats) | data_read_cnt
       val dout = Wire(Vec(split, UInt(outerBeatSize.W)))
 
-      val data_write_way = Mux(s1_write_hit, s1_hit_way, s1_repl_way)
+      val data_write_way = Mux(s3_decode.write_hit_reg, s3_decode.hit_way_reg, s3_decode.repl_way_reg)
       val data_write_cnt = Wire(UInt())
       val data_write_valid = state === s_data_write
       val data_write_idx = s3_idx << log2Ceil(innerDataBeats) | data_write_cnt
@@ -817,25 +823,25 @@ with HasControlPlaneParameters
       // s_data_read
       // read miss or need write back
       // stage 3: writeback, refill, merge wdata, data resp
-      val data_buf = Reg(Vec(outerDataBeats, UInt(outerBeatSize.W)))
+      val s3_data_buf = Reg(Vec(outerDataBeats, UInt(outerBeatSize.W)))
       when (data_read_valid) {
         data_read_cnt := data_read_cnt + 1.U
       }
       when (state === s_data_read) {
         for (i <- 0 until split) {
-          data_buf(((data_read_cnt - 1.U) << splitBits) + i.U) := dout(i)
+          s3_data_buf(((data_read_cnt - 1.U) << splitBits) + i.U) := dout(i)
         }
         when (data_read_cnt === innerDataBeats.U) {
           data_read_cnt := 0.U
-          when (s1_read_hit && s3_ready) {
+          when (s2_decode.read_hit_reg && s3_ready) {
             state := s_data_resp
             cache_s3 := cache_s2
             s3_decode := s2_decode
-          } .elsewhen ((read_miss_writeback || write_miss_writeback) & s3_ready) {
+          } .elsewhen ((s2_decode.read_miss_writeback_reg || s2_decode.write_miss_writeback_reg) & s3_ready) {
             state := s_wait_ram_awready
             cache_s3 := cache_s2
             s3_decode := s2_decode
-          } .elsewhen ((s1_write_hit) && s3_ready) {
+          } .elsewhen ((s2_decode.write_hit_reg) && s3_ready) {
             state := s_merge_put_data
             cache_s3 := cache_s2
             s3_decode := s2_decode
@@ -857,9 +863,9 @@ with HasControlPlaneParameters
         for (merge_idx <- 0 until outerDataBeats) {
           val idx = merge_idx.U
           when (idx <= cache_s3.in_len) {
-            data_buf(idx) := mergePutData(data_buf(idx), cache_s3.data(idx), cache_s3.mask(idx))
+            s3_data_buf(idx) := mergePutData(s3_data_buf(idx), cache_s3.data(idx), cache_s3.mask(idx))
             log("[merge] put_data_buf %x / %x, data_buf %x, addr %x, currbeat%x, lastbeat%x",
-              cache_s3.data(idx), cache_s3.mask(idx), data_buf(idx), cache_s3.address, idx , cache_s3.in_len)
+              cache_s3.data(idx), cache_s3.mask(idx), s3_data_buf(idx), cache_s3.address, idx , cache_s3.in_len)
           }
         }
         state := s_data_write
@@ -868,7 +874,7 @@ with HasControlPlaneParameters
       // s_data_write
       val (write_cnt, write_done) = Counter(state === s_data_write, innerDataBeats)
       data_write_cnt := write_cnt
-      din(data_write_cnt) := data_buf(data_write_cnt)
+      din(data_write_cnt) := s3_data_buf(data_write_cnt)
       
       when (state === s_data_write && write_done) {
         when (s3_ren) {
@@ -898,8 +904,8 @@ with HasControlPlaneParameters
       TL2CacheOutput.io.tl_out_d_valid := out.d.valid
       out.d.ready := TL2CacheOutput.io.tl_out_d_ready
 
-      TL2CacheOutput.io.wb_addr := s1_writeback_addr
-      TL2CacheOutput.io.wb_data := data_buf
+      TL2CacheOutput.io.wb_addr := s3_decode.writeback_addr_reg
+      TL2CacheOutput.io.wb_data := s3_data_buf
       TL2CacheOutput.io.wb_valid := state === s_wait_ram_awready
       when (TL2CacheOutput.io.wb_ready && state === s_wait_ram_awready) {
         state := s_wait_ram_arready // also wb_valid -> false
@@ -913,7 +919,7 @@ with HasControlPlaneParameters
       TL2CacheOutput.io.rf_data_mask := edgeOut.mask(s3_mem_addr, outerBurstLen.U)
       TL2CacheOutput.io.rf_ready := state === s_wait_ram_arready
       when (TL2CacheOutput.io.rf_ready && TL2CacheOutput.io.rf_data_valid) {
-        data_buf := TL2CacheOutput.io.rf_data
+        s3_data_buf := TL2CacheOutput.io.rf_data
         when (s3_ren) {
           state := s_data_write // also rf_ready turns false
         } .otherwise {
@@ -926,7 +932,7 @@ with HasControlPlaneParameters
       // ########################################################
       
       TL2CacheInput.io.cache_s3.req := cache_s3
-      TL2CacheInput.io.cache_s3.req.data := data_buf
+      TL2CacheInput.io.cache_s3.req.data := s3_data_buf
       TL2CacheInput.io.cache_s3.valid := s3_valid
 
       when (state === s_data_resp) {
