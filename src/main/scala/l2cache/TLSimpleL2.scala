@@ -663,11 +663,11 @@ with HasControlPlaneParameters
       //val s1_decode.writeback_addr_reg = Cat(writeback_tag, Cat(s1_idx, Cat(bank, 0.U(blockOffsetBits.W))))
 
       s1_decode.read_miss_writeback_reg := s1_read_miss && need_writeback
-      s1_decode.read_miss_no_writeback = s1_read_miss && !need_writeback
+      s1_decode.read_miss_no_writeback := s1_read_miss && !need_writeback
       s1_decode.write_miss_writeback_reg := s1_write_miss && need_writeback
-      s1_decode.write_miss_no_writeback = s1_write_miss && !need_writeback
+      s1_decode.write_miss_no_writeback := s1_write_miss && !need_writeback
 
-      val need_data_read = s1_decode.read_hit_reg || s1_decode.write_hit_reg || s1_decode.read_miss_writeback_reg || s1_decode.write_miss_writeback_reg
+      //val need_data_read = s1_decode.read_hit_reg || s1_decode.write_hit_reg || s1_decode.read_miss_writeback_reg || s1_decode.write_miss_writeback_reg
 
       when (s1_state === s1_tag_read || s1_state === s1_wait) {
         // log("hit: %d s1_idx: %d curr_state_reg: %x waymask: %x hit_way: %x repl_way: %x", s1_hit, s1_idx, curr_state_reg, curr_mask, s1_decode.hit_way_reg, s1_decode.repl_way_reg)
@@ -880,8 +880,8 @@ with HasControlPlaneParameters
           s3_state := s3_wait_ram_arready
           s2_state := s2_idle
 
-          s3_decode := s2_decode
           cache_s3 := cache_s2
+          s3_decode := s2_decode
         }
       }
 
