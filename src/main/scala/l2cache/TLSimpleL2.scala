@@ -438,8 +438,8 @@ with HasControlPlaneParameters
       val outerBeatSize = out.d.bits.params.dataBits
       val outerBeatBytes = outerBeatSize / 8
       val outerDataBeats = blockSize / outerBeatSize
-      val split = innerBeatSize / outerBeatSize
-      val splitBits = log2Ceil(split)
+      //val split = innerBeatSize / outerBeatSize
+      //val splitBits = log2Ceil(split)
       val addrWidth = in.a.bits.params.addressBits
       val innerIdWidth = in.a.bits.params.sourceBits
       val outerIdWidth = out.a.bits.params.sourceBits
@@ -793,13 +793,13 @@ with HasControlPlaneParameters
       val data_read_cnt = RegInit(0.asUInt((log2Ceil(innerDataBeats) + 1).W))
       val data_read_valid = (s2_state === s2_data_read && data_read_cnt =/= innerDataBeats.U)
       val data_read_idx = s2_idx << log2Ceil(innerDataBeats) | data_read_cnt
-      val dout = Wire(Vec(split, UInt(outerBeatSize.W)))
+      val dout = Wire(UInt(outerBeatSize.W))
 
       val data_write_way = Mux(s3_decode.write_hit_reg, s3_decode.hit_way_reg, s3_decode.repl_way_reg)
       val data_write_cnt = Wire(UInt())
       val data_write_valid = s3_state === s3_data_write
       val data_write_idx = s3_idx << log2Ceil(innerDataBeats) | data_write_cnt
-      val din = Wire(Vec(split, UInt(outerBeatSize.W)))
+      val din = Wire(UInt(outerBeatSize.W))
 
       // when (GTimer() > 95000.U && GTimer() < 96000.U) {
       //   log("s1_source %x s2_source %x s3_source %x s1_opcode %x s2_opcode %x s3_opcode %x",
@@ -809,24 +809,23 @@ with HasControlPlaneParameters
       //   s1_in.opcode, cache_s2.opcode, cache_s3.opcode)
       // }
 
-      val data_arrays = Seq.fill(split) {
-        DescribedSRAM(
+      val data_array = DescribedSRAM(
           name = "L2_data_array",
           desc = "L2 data array",
           size = nSets * innerDataBeats,
           data = Vec(nWays, UInt(width = outerBeatSize.W))
-        ) }
-      for ((data_array, i) <- data_arrays zipWithIndex) {
-        when (data_write_valid) {
-          log("write data array: %d idx: %d way: %d data: %x", i.U, data_write_idx, data_write_way, din(i))
-          data_array.write(data_write_idx, Vec.fill(nWays)(din(i)), (0 until nWays).map(data_write_way === UInt(_)))
-        }
-        dout(i) := data_array.read(data_read_idx, data_read_valid && !data_write_valid)(data_read_way)
-        when (RegNext(data_read_valid, N)) {
-          log("read data array: %d idx: %d way: %d data: %x",
-            i.U, RegNext(data_read_idx), RegNext(data_read_way), dout(i))
-        }
+        ) 
+      //for (data_array, i) <- data_arrays zipWithIndex) {
+      when (data_write_valid) {
+        log("write data array: idx: %d way: %d data: %x", data_write_idx, data_write_way, din)
+        data_array.write(data_write_idx, Vec.fill(nWays)(din), (0 until nWays).map(data_write_way === UInt(_)))
       }
+      dout := data_array.read(data_read_idx, data_read_valid && !data_write_valid)(data_read_way)
+      when (RegNext(data_read_valid, N)) {
+        log("read data array: idx: %d way: %d data: %x",
+          RegNext(data_read_idx), RegNext(data_read_way), dout)
+      }
+      //}
 
       // s_data_read
       // read miss or need write back
@@ -846,9 +845,10 @@ with HasControlPlaneParameters
       //   }
       // }
       when (s2_state === s2_data_read) {
-        for (i <- 0 until split) {
-          s2_data_buf(((data_read_cnt - 1.U) << splitBits) + i.U) := dout(i)
-        }
+        // for (i <- 0 until split) {
+        //   s2_data_buf(((data_read_cnt - 1.U) << splitBits) + i.U) := dout(i)
+        // }
+        s2_data_buf(data_read_cnt - 1.U) := dout
         when (data_read_cnt === innerDataBeats.U) {
           data_read_cnt := 0.U
           s2_state := s2_wait
@@ -910,7 +910,7 @@ with HasControlPlaneParameters
       // s_data_write
       val (write_cnt, write_done) = Counter(s3_state === s3_data_write, innerDataBeats)
       data_write_cnt := write_cnt
-      din(data_write_cnt) := s3_data_buf(data_write_cnt)
+      din := s3_data_buf(data_write_cnt)
       
       when (s3_state === s3_data_write && write_done) {
         when (s3_ren) {
