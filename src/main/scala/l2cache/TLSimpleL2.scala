@@ -42,6 +42,8 @@ class L2CacheDecodeInfo(nWays: Int, addrWidth: Int) extends Bundle with L2CacheP
   val write_hit_reg = Bool()
   val read_miss_writeback_reg = Bool()
   val write_miss_writeback_reg = Bool()
+  val read_miss_no_writeback = Bool()
+  val write_miss_no_writeback = Bool()
   val writeback_addr_reg = UInt(addrWidth.W)
   override def cloneType = new L2CacheDecodeInfo(nWays, addrWidth).asInstanceOf[this.type]
 }
@@ -638,7 +640,6 @@ with HasControlPlaneParameters
       s1_decode.write_hit_reg := s1_hit && s1_wen
       val s1_read_miss = !s1_hit && s1_ren
       val s1_write_miss = !s1_hit && s1_wen
-      //s1_decode.hit_way_reg  := Bits(0)
       (0 until nWays).foreach(i => when (s1_tag_match_way(i)) { s1_decode.hit_way_reg  := Bits(i) })
 
       cp.dsid := s1_in.dsid
@@ -662,9 +663,9 @@ with HasControlPlaneParameters
       //val s1_decode.writeback_addr_reg = Cat(writeback_tag, Cat(s1_idx, Cat(bank, 0.U(blockOffsetBits.W))))
 
       s1_decode.read_miss_writeback_reg := s1_read_miss && need_writeback
-      val s1_read_miss_no_writeback = s1_read_miss && !need_writeback
+      s1_decode.read_miss_no_writeback = s1_read_miss && !need_writeback
       s1_decode.write_miss_writeback_reg := s1_write_miss && need_writeback
-      val s1_write_miss_no_writeback = s1_write_miss && !need_writeback
+      s1_decode.write_miss_no_writeback = s1_write_miss && !need_writeback
 
       val need_data_read = s1_decode.read_hit_reg || s1_decode.write_hit_reg || s1_decode.read_miss_writeback_reg || s1_decode.write_miss_writeback_reg
 
@@ -695,30 +696,18 @@ with HasControlPlaneParameters
             s1_state := s1_idle
             s2_state := s2_data_read
 
-            s2_decode.hit_way_reg := s1_decode.hit_way_reg
-            s2_decode.repl_way_reg := s1_decode.repl_way_reg
-            s2_decode.write_hit_reg := s1_decode.write_hit_reg
-            s2_decode.read_hit_reg := s1_decode.read_hit_reg
-            s2_decode.read_miss_writeback_reg := s1_decode.read_miss_writeback_reg
-            s2_decode.write_miss_writeback_reg := s1_decode.write_miss_writeback_reg
-            s2_decode.writeback_addr_reg := s1_decode.writeback_addr_reg
+            s2_decode := s1_decode
             cache_s2 := s1_in
           }
-        } .elsewhen ((s1_read_miss_no_writeback || s1_write_miss_no_writeback)) {
+        } .elsewhen ((s1_decode.read_miss_no_writeback || s1_decode.write_miss_no_writeback)) {
           // no need to write back, directly refill data
           // here I want to make a dynamic pipeline control, to just skip stage2
           s1_state := s1_wait
           when (s2_ready) {
             s1_state := s1_idle
-            s2_state := s2_stay
+            s2_state := s2_wait
 
-            s2_decode.hit_way_reg := s1_decode.hit_way_reg
-            s2_decode.repl_way_reg := s1_decode.repl_way_reg
-            s2_decode.write_hit_reg := s1_decode.write_hit_reg
-            s2_decode.read_hit_reg := s1_decode.read_hit_reg
-            s2_decode.read_miss_writeback_reg := s1_decode.read_miss_writeback_reg
-            s2_decode.write_miss_writeback_reg := s1_decode.write_miss_writeback_reg
-            s2_decode.writeback_addr_reg := s1_decode.writeback_addr_reg
+            s2_decode := s1_decode
             cache_s2 := s1_in
           }
         } 
@@ -847,15 +836,15 @@ with HasControlPlaneParameters
       when (data_read_valid && !data_write_valid) {
         data_read_cnt := data_read_cnt + 1.U
       }
-      when (s2_state === s2_stay) {
-        when (s3_ready) {
-          s3_state := s3_wait_ram_arready
-          s2_state := s2_idle
+      // when (s2_state === s2_stay) {
+      //   when (s3_ready) {
+      //     s3_state := s3_wait_ram_arready
+      //     s2_state := s2_idle
 
-          s3_decode := s2_decode
-          cache_s3 := cache_s2
-        }
-      }
+      //     s3_decode := s2_decode
+      //     cache_s3 := cache_s2
+      //   }
+      // }
       when (s2_state === s2_data_read) {
         for (i <- 0 until split) {
           s2_data_buf(((data_read_cnt - 1.U) << splitBits) + i.U) := dout(i)
@@ -867,27 +856,33 @@ with HasControlPlaneParameters
       }
       when (s2_state === s2_wait) {
         when (s2_decode.read_hit_reg && s3_ready) {
-            s3_state := s3_data_resp
-            s2_state := s2_idle
+          s3_state := s3_data_resp
+          s2_state := s2_idle
 
-            cache_s3 := cache_s2
-            s3_decode := s2_decode
-            s3_data_buf := s2_data_buf
-          } .elsewhen ((s2_decode.read_miss_writeback_reg || s2_decode.write_miss_writeback_reg) & s3_ready) {
-            s3_state := s3_wait_ram_awready
-            s2_state := s2_idle
+          cache_s3 := cache_s2
+          s3_decode := s2_decode
+          s3_data_buf := s2_data_buf
+        } .elsewhen ((s2_decode.read_miss_writeback_reg || s2_decode.write_miss_writeback_reg) & s3_ready) {
+          s3_state := s3_wait_ram_awready
+          s2_state := s2_idle
 
-            cache_s3 := cache_s2
-            s3_decode := s2_decode
-            s3_data_buf := s2_data_buf
-          } .elsewhen ((s2_decode.write_hit_reg) && s3_ready) {
-            s3_state := s3_merge_put_data
-            s2_state := s2_idle
+          cache_s3 := cache_s2
+          s3_decode := s2_decode
+          s3_data_buf := s2_data_buf
+        } .elsewhen ((s2_decode.write_hit_reg) && s3_ready) {
+          s3_state := s3_merge_put_data
+          s2_state := s2_idle
 
-            cache_s3 := cache_s2
-            s3_decode := s2_decode
-            s3_data_buf := s2_data_buf
-          }
+          cache_s3 := cache_s2
+          s3_decode := s2_decode
+          s3_data_buf := s2_data_buf
+        } .elsewhen ((s2_decode.read_miss_no_writeback || s2_decode.write_miss_no_writeback) && s3_ready) {
+          s3_state := s3_wait_ram_arready
+          s2_state := s2_idle
+
+          s3_decode := s2_decode
+          cache_s3 := cache_s2
+        }
       }
 
       // s_merge_put_data: merge data_buf and put_data_buf, and store the final result in data_buf
@@ -925,17 +920,10 @@ with HasControlPlaneParameters
         }
       }
 
-      // outer tilelink interface
-      // external memory bus width is 32/64/128bits
-      // so each memport read/write is mapped into a whole tilelink bus width read/write
-      val s3_mem_addr = Cat(cache_s3.address(tagMSB, indexLSB), 0.asUInt(blockOffsetBits.W))
-      //val s3_mem_addr = Cat(cache_s3.address(tagMSB, bankLSB), 0.asUInt(blockOffsetBits.W))
-
       // #########################################################
       // #                  write back path                      #
       // #########################################################
       // s_wait_ram_awready
-
       val TL2CacheOutput = Module(new TLCacheConvertorOut(edgeIn.bundle, dsidWidth))
       TL2CacheOutput.io.dsid := s1_in.dsid
       out.a.bits := TL2CacheOutput.io.tl_out_a.bits
@@ -955,6 +943,8 @@ with HasControlPlaneParameters
       // #####################################################
       // #                  refill path                      #
       // #####################################################
+      val s3_mem_addr = Cat(cache_s3.address(tagMSB, indexLSB), 0.asUInt(blockOffsetBits.W))
+      //val s3_mem_addr = Cat(cache_s3.address(tagMSB, bankLSB), 0.asUInt(blockOffsetBits.W))
       TL2CacheOutput.io.rf_addr := s3_mem_addr
       TL2CacheOutput.io.rf_addr_valid := s3_state === s3_wait_ram_arready
       TL2CacheOutput.io.rf_data_mask := edgeOut.mask(s3_mem_addr, outerBurstLen.U)
@@ -980,7 +970,7 @@ with HasControlPlaneParameters
         }
       }
 
-
+      // outer tilelink interface
       when (in.b.fire() || in.c.fire() || in.e.fire()) {
         assert(Bool(false), "Inner tilelink Unexpected handshake")
       }
