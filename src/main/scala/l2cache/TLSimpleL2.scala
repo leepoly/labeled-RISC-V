@@ -498,12 +498,13 @@ with HasControlPlaneParameters
       // s_idle: idle state
       // capture requests
       val TL2CacheInput = Module(new TLCacheConvertorIn(edgeIn.bundle, dsidWidth))
-      val cache_s2 = Reg(new L2CacheReq(edgeIn.bundle, dsidWidth))
-      val cache_s3 = Reg(new L2CacheReq(edgeIn.bundle, dsidWidth))
       val s1_in = Reg(new L2CacheReq(edgeIn.bundle, dsidWidth))
+      val s1_decode = Wire(new L2CacheDecodeInfo(nWays, addrWidth))
+      val cache_s2 = Reg(new L2CacheReq(edgeIn.bundle, dsidWidth))
+      val s2_decode = Reg(new L2CacheDecodeInfo(nWays, addrWidth))
+      val cache_s3 = Reg(new L2CacheReq(edgeIn.bundle, dsidWidth))
+      val s3_decode = Reg(new L2CacheDecodeInfo(nWays, addrWidth))
       val s1_valid = TL2CacheInput.io.cache_s0.valid
-      //val s2_valid = Wire(Bool())
-      val s3_valid = Wire(Bool())
       val s2_ready = s2_state === s2_idle
       val s3_ready = s3_state === s3_idle
       val s1_ready = !rst && s1_state === s_idle && 
@@ -511,8 +512,6 @@ with HasControlPlaneParameters
                       (!(s1_valid && !s3_ready && TL2CacheInput.io.cache_s0.req.address === cache_s3.address && op_wen(cache_s3.opcode) && op_ren(TL2CacheInput.io.cache_s0.req.opcode)))
       
       val s3_ren = cache_s3.opcode === TLMessages.Get
-      val s2_decode = Reg(new L2CacheDecodeInfo(nWays, addrWidth))
-      val s3_decode = Reg(new L2CacheDecodeInfo(nWays, addrWidth))
 
       val s1_ren = s1_in.opcode === TLMessages.Get
       val s1_wen = s1_in.opcode === TLMessages.PutFullData || s1_in.opcode === TLMessages.PutPartialData
@@ -564,7 +563,6 @@ with HasControlPlaneParameters
 
       when (s1_valid && s1_ready) {
         s1_in := TL2CacheInput.io.cache_s0.req
-        //state := s_tag_read_req
         s1_state := s1_tag_read_req
       }
 
@@ -612,7 +610,6 @@ with HasControlPlaneParameters
       val set_dsids = wayMap((w: Int) => meta_rdata(w).dsid)
 
       when (s1_state === s1_tag_read_req) {
-        //state := s_tag_read_resp
         s1_state := s1_tag_read_resp // seems one extra cycle
       }
 
@@ -624,7 +621,6 @@ with HasControlPlaneParameters
       val set_dsids_reg = Reg(Vec(nWays, UInt(width = dsidWidth.W)))
 
       when (s1_state === s1_tag_read_resp) {
-        //state := s_tag_read
         s1_state := s1_tag_read
         vb_rdata_reg := vb_rdata
         db_rdata_reg := db_rdata
@@ -638,43 +634,42 @@ with HasControlPlaneParameters
       val s1_tag_eq_way = wayMap((w: Int) => tag_rdata_reg(w) === s1_tag)
       val s1_tag_match_way = wayMap((w: Int) => s1_tag_eq_way(w) && vb_rdata_reg(w)).asUInt
       val s1_hit = s1_tag_match_way.orR
-      val s1_read_hit = s1_hit && s1_ren
-      val s1_write_hit = s1_hit && s1_wen
+      s1_decode.read_hit_reg := s1_hit && s1_ren
+      s1_decode.write_hit_reg := s1_hit && s1_wen
       val s1_read_miss = !s1_hit && s1_ren
       val s1_write_miss = !s1_hit && s1_wen
-      val s1_hit_way = Wire(Bits())
-      s1_hit_way := Bits(0)
-      (0 until nWays).foreach(i => when (s1_tag_match_way(i)) { s1_hit_way := Bits(i) })
+      //s1_decode.hit_way_reg  := Bits(0)
+      (0 until nWays).foreach(i => when (s1_tag_match_way(i)) { s1_decode.hit_way_reg  := Bits(i) })
 
       cp.dsid := s1_in.dsid
       val curr_mask = cp.waymask
-      val s1_repl_way = Mux((curr_state_reg & curr_mask).orR, PriorityEncoder(curr_state_reg & curr_mask),
+      s1_decode.repl_way_reg := Mux((curr_state_reg & curr_mask).orR, PriorityEncoder(curr_state_reg & curr_mask),
         Mux(curr_mask.orR, PriorityEncoder(curr_mask), UInt(0)))
-      val repl_dsid = set_dsids_reg(s1_repl_way)
+      val repl_dsid = set_dsids_reg(s1_decode.repl_way_reg)
       val dsid_occupacy = RegInit(Vec(Seq.fill(1 << dsidWidth){ 0.U(log2Ceil(p(NL2CacheCapacity) * 1024 / blockBytes).W) }))
       val requester_occupacy = dsid_occupacy(s1_in.dsid)
       val victim_occupacy = dsid_occupacy(repl_dsid)
       // when (s1_state === s1_tag_read) {
-      //   log("req_dsid %d occ %d repl_dsid %d occ %d way %d", s1_in.dsid, requester_occupacy, repl_dsid, victim_occupacy, s1_repl_way)
+      //   log("req_dsid %d occ %d repl_dsid %d occ %d way %d", s1_in.dsid, requester_occupacy, repl_dsid, victim_occupacy, s1_decode.repl_way_reg)
       // }
 
       cp.capacity := dsid_occupacy(cp.capacity_dsid)
 
       // valid and dirty
-      val need_writeback = vb_rdata_reg(s1_repl_way) && db_rdata_reg(s1_repl_way)
-      val writeback_tag = tag_rdata_reg(s1_repl_way)
-      val s1_writeback_addr = Cat(writeback_tag, Cat(s1_idx, 0.U(blockOffsetBits.W)))
-      //val s1_writeback_addr = Cat(writeback_tag, Cat(s1_idx, Cat(bank, 0.U(blockOffsetBits.W))))
+      val need_writeback = vb_rdata_reg(s1_decode.repl_way_reg) && db_rdata_reg(s1_decode.repl_way_reg)
+      val writeback_tag = tag_rdata_reg(s1_decode.repl_way_reg)
+      s1_decode.writeback_addr_reg := Cat(writeback_tag, Cat(s1_idx, 0.U(blockOffsetBits.W)))
+      //val s1_decode.writeback_addr_reg = Cat(writeback_tag, Cat(s1_idx, Cat(bank, 0.U(blockOffsetBits.W))))
 
-      val s1_read_miss_writeback = s1_read_miss && need_writeback
+      s1_decode.read_miss_writeback_reg := s1_read_miss && need_writeback
       val s1_read_miss_no_writeback = s1_read_miss && !need_writeback
-      val s1_write_miss_writeback = s1_write_miss && need_writeback
+      s1_decode.write_miss_writeback_reg := s1_write_miss && need_writeback
       val s1_write_miss_no_writeback = s1_write_miss && !need_writeback
 
-      val need_data_read = s1_read_hit || s1_write_hit || s1_read_miss_writeback || s1_write_miss_writeback
+      val need_data_read = s1_decode.read_hit_reg || s1_decode.write_hit_reg || s1_decode.read_miss_writeback_reg || s1_decode.write_miss_writeback_reg
 
       when (s1_state === s1_tag_read || s1_state === s1_wait) {
-        // log("hit: %d s1_idx: %d curr_state_reg: %x waymask: %x hit_way: %x repl_way: %x", s1_hit, s1_idx, curr_state_reg, curr_mask, s1_hit_way, s1_repl_way)
+        // log("hit: %d s1_idx: %d curr_state_reg: %x waymask: %x hit_way: %x repl_way: %x", s1_hit, s1_idx, curr_state_reg, curr_mask, s1_decode.hit_way_reg, s1_decode.repl_way_reg)
         // when (s1_ren) {
         //   log_part("read addr: %x tag: %x hit: %d ", s1_in.address, s1_tag, s1_hit)
         // }
@@ -682,11 +677,11 @@ with HasControlPlaneParameters
         //   log_part("write addr: %x tag: %x hit: %d ", s1_in.address, s1_tag, s1_hit)
         // }
         // when (s1_hit) {
-        //   log_plain("[hit] hit_way: %d\n", s1_hit_way)
+        //   log_plain("[hit] hit_way: %d\n", s1_decode.hit_way_reg)
         // } .elsewhen (need_writeback) {
-        //   log_plain("[wb] repl_way: %d wb_addr: %x\n", s1_repl_way, s1_writeback_addr)
+        //   log_plain("[wb] repl_way: %d wb_addr: %x\n", s1_decode.repl_way_reg, s1_decode.writeback_addr_reg)
         // } .otherwise {
-        //   log_plain("repl_way: %d repl_addr: %x\n", s1_repl_way, s1_writeback_addr)
+        //   log_plain("repl_way: %d repl_addr: %x\n", s1_decode.repl_way_reg, s1_decode.writeback_addr_reg)
         // }
         // log("s1 tags: " + Seq.fill(tag_rdata_reg.size)("%x").mkString(" "), tag_rdata_reg:_*)
         // log("s1 vb: %x db: %x", vb_rdata_reg, db_rdata_reg)
@@ -694,20 +689,19 @@ with HasControlPlaneParameters
         // check for cross cache line bursts
         //assert(inner_end_beat < innerDataBeats.U, s"cross cache line bursts detected  inner_end_beat$inner_end_beat < innerDataBeats${innerDataBeats.U} addr$addr")
 
-        when ((s1_read_hit || s1_write_hit || s1_read_miss_writeback || s1_write_miss_writeback)) {
+        when ((s1_decode.read_hit_reg || s1_decode.write_hit_reg || s1_decode.read_miss_writeback_reg || s1_decode.write_miss_writeback_reg)) {
           s1_state := s1_wait
           when (s2_ready) {
-            //state := s_data_read
             s1_state := s1_idle
             s2_state := s2_data_read
 
-            s2_decode.hit_way_reg := s1_hit_way
-            s2_decode.repl_way_reg := s1_repl_way
-            s2_decode.write_hit_reg := s1_write_hit
-            s2_decode.read_hit_reg := s1_read_hit
-            s2_decode.read_miss_writeback_reg := s1_read_miss_writeback
-            s2_decode.write_miss_writeback_reg := s1_write_miss_writeback
-            s2_decode.writeback_addr_reg := s1_writeback_addr
+            s2_decode.hit_way_reg := s1_decode.hit_way_reg
+            s2_decode.repl_way_reg := s1_decode.repl_way_reg
+            s2_decode.write_hit_reg := s1_decode.write_hit_reg
+            s2_decode.read_hit_reg := s1_decode.read_hit_reg
+            s2_decode.read_miss_writeback_reg := s1_decode.read_miss_writeback_reg
+            s2_decode.write_miss_writeback_reg := s1_decode.write_miss_writeback_reg
+            s2_decode.writeback_addr_reg := s1_decode.writeback_addr_reg
             cache_s2 := s1_in
           }
         } .elsewhen ((s1_read_miss_no_writeback || s1_write_miss_no_writeback)) {
@@ -716,23 +710,18 @@ with HasControlPlaneParameters
           s1_state := s1_wait
           when (s2_ready) {
             s1_state := s1_idle
-            //s3_state := s3_wait_ram_arready
             s2_state := s2_stay
 
-            s2_decode.hit_way_reg := s1_hit_way
-            s2_decode.repl_way_reg := s1_repl_way
-            s2_decode.write_hit_reg := s1_write_hit
-            s2_decode.read_hit_reg := s1_read_hit
-            s2_decode.read_miss_writeback_reg := s1_read_miss_writeback
-            s2_decode.write_miss_writeback_reg := s1_write_miss_writeback
-            s2_decode.writeback_addr_reg := s1_writeback_addr
+            s2_decode.hit_way_reg := s1_decode.hit_way_reg
+            s2_decode.repl_way_reg := s1_decode.repl_way_reg
+            s2_decode.write_hit_reg := s1_decode.write_hit_reg
+            s2_decode.read_hit_reg := s1_decode.read_hit_reg
+            s2_decode.read_miss_writeback_reg := s1_decode.read_miss_writeback_reg
+            s2_decode.write_miss_writeback_reg := s1_decode.write_miss_writeback_reg
+            s2_decode.writeback_addr_reg := s1_decode.writeback_addr_reg
             cache_s2 := s1_in
           }
-          
         } 
-        // .otherwise {
-        //   assert(N, s"Unexpected condition in s_tag_read read_hit$s1_read_hit write_hit$s1_write_hit state$state")
-        // }
       }
 
       val rst_metadata = Wire(Vec(nWays, new MetadataEntry(tagBits, 16)))
@@ -746,7 +735,7 @@ with HasControlPlaneParameters
 
 
       // update metadata
-      val update_way = Mux(s1_hit, s1_hit_way, s1_repl_way)
+      val update_way = Mux(s1_hit, s1_decode.hit_way_reg, s1_decode.repl_way_reg)
       val next_state = Wire(Bits())
       when (s1_state === s1_tag_read) {
         when (!(curr_state_reg & curr_mask).orR) {
@@ -764,7 +753,7 @@ with HasControlPlaneParameters
         val is_update_way = update_way === i.U
         when (is_update_way) {
           metadata.valid := true.B
-          metadata.dirty := Mux(s1_read_hit, db_rdata_reg(update_way),
+          metadata.dirty := Mux(s1_decode.read_hit_reg, db_rdata_reg(update_way),
             Mux(s1_read_miss, false.B, true.B))
           metadata.tag := s1_tag
           metadata.dsid := s1_in.dsid
@@ -789,8 +778,8 @@ with HasControlPlaneParameters
         meta_array.write(meta_array_widx, meta_array_wdata)
         // Update dsid occupacy stat
         when (!s1_hit && !rst) {
-          assert(update_way === s1_repl_way, "update must = repl way when decrease a dsid's occupacy")
-          val victim_valid = vb_rdata_reg(s1_repl_way)
+          assert(update_way === s1_decode.repl_way_reg, "update must = repl way when decrease a dsid's occupacy")
+          val victim_valid = vb_rdata_reg(s1_decode.repl_way_reg)
           dsid_occupacy.zipWithIndex foreach { case (dsid_occ, i) =>
               when (i.U === s1_in.dsid && (!victim_valid || i.U =/= repl_dsid)) {
                 dsid_occ := requester_occupacy + 1.U
@@ -799,7 +788,7 @@ with HasControlPlaneParameters
               }
           }
           // when (victim_valid) {
-          //   log("victim dsid %d dec way %d old_value %d", repl_dsid, s1_repl_way, victim_occupacy)
+          //   log("victim dsid %d dec way %d old_value %d", repl_dsid, s1_decode.repl_way_reg, victim_occupacy)
           // }
           // log("dsid %d inc way %d old_value %d", s1_in.dsid, update_way, requester_occupacy)
         }
@@ -823,13 +812,13 @@ with HasControlPlaneParameters
       val data_write_idx = s3_idx << log2Ceil(innerDataBeats) | data_write_cnt
       val din = Wire(Vec(split, UInt(outerBeatSize.W)))
 
-      when (GTimer() > 95000.U && GTimer() < 96000.U) {
-        log("s1_source %x s2_source %x s3_source %x s1_opcode %x s2_opcode %x s3_opcode %x",
-        s1_in.source,
-        cache_s2.source,
-        cache_s3.source,
-        s1_in.opcode, cache_s2.opcode, cache_s3.opcode)
-      }
+      // when (GTimer() > 95000.U && GTimer() < 96000.U) {
+      //   log("s1_source %x s2_source %x s3_source %x s1_opcode %x s2_opcode %x s3_opcode %x",
+      //   s1_in.source,
+      //   cache_s2.source,
+      //   cache_s3.source,
+      //   s1_in.opcode, cache_s2.opcode, cache_s3.opcode)
+      // }
 
       val data_arrays = Seq.fill(split) {
         DescribedSRAM(
@@ -862,7 +851,6 @@ with HasControlPlaneParameters
         when (s3_ready) {
           s3_state := s3_wait_ram_arready
           s2_state := s2_idle
-          //state := s_wait_ram_arready
 
           s3_decode := s2_decode
           cache_s3 := cache_s2
@@ -881,13 +869,11 @@ with HasControlPlaneParameters
         when (s2_decode.read_hit_reg && s3_ready) {
             s3_state := s3_data_resp
             s2_state := s2_idle
-            //state := s_data_resp
 
             cache_s3 := cache_s2
             s3_decode := s2_decode
             s3_data_buf := s2_data_buf
           } .elsewhen ((s2_decode.read_miss_writeback_reg || s2_decode.write_miss_writeback_reg) & s3_ready) {
-            //state := s_wait_ram_awready
             s3_state := s3_wait_ram_awready
             s2_state := s2_idle
 
@@ -895,7 +881,6 @@ with HasControlPlaneParameters
             s3_decode := s2_decode
             s3_data_buf := s2_data_buf
           } .elsewhen ((s2_decode.write_hit_reg) && s3_ready) {
-            //state := s_merge_put_data
             s3_state := s3_merge_put_data
             s2_state := s2_idle
 
@@ -917,12 +902,13 @@ with HasControlPlaneParameters
         for (merge_idx <- 0 until outerDataBeats) {
           val idx = merge_idx.U
           when (idx <= cache_s3.in_len) {
+            //s3_data_buf: old data(from hit tag's data)
+            //cache_s3.data: new data(from cache_s1.wdata)
             s3_data_buf(idx) := mergePutData(s3_data_buf(idx), cache_s3.data(idx), cache_s3.mask(idx))
             log("[merge] put_data_buf %x / %x, data_buf %x, addr %x, currbeat%x, lastbeat%x",
               cache_s3.data(idx), cache_s3.mask(idx), s3_data_buf(idx), cache_s3.address, idx , cache_s3.in_len)
           }
         }
-        //state := s_data_write
         s3_state := s3_data_write
       }
 
@@ -933,12 +919,8 @@ with HasControlPlaneParameters
       
       when (s3_state === s3_data_write && write_done) {
         when (s3_ren) {
-          //state := s_data_resp
           s3_state := s3_data_resp
         } .otherwise {
-          //state := s_idle
-          //s1_state := s1_idle
-          //s2_state := s2_idle
           s3_state := s3_idle
         }
       }
@@ -967,8 +949,7 @@ with HasControlPlaneParameters
       TL2CacheOutput.io.wb_data := s3_data_buf
       TL2CacheOutput.io.wb_valid := s3_state === s3_wait_ram_awready
       when (TL2CacheOutput.io.wb_ready && s3_state === s3_wait_ram_awready) {
-        //state := s_wait_ram_arready // also wb_valid -> false
-        s3_state := s3_wait_ram_arready
+        s3_state := s3_wait_ram_arready // also wb_valid -> false
       }
 
       // #####################################################
@@ -981,10 +962,8 @@ with HasControlPlaneParameters
       when (TL2CacheOutput.io.rf_ready && TL2CacheOutput.io.rf_data_valid) {
         s3_data_buf := TL2CacheOutput.io.rf_data
         when (s3_ren) {
-          //state := s_data_write // also rf_ready turns false
-          s3_state := s3_data_write
+          s3_state := s3_data_write // also rf_ready turns false
         } .otherwise {
-          //state := s_merge_put_data
           s3_state := s3_merge_put_data
         }
       }
@@ -997,9 +976,6 @@ with HasControlPlaneParameters
       TL2CacheInput.io.cache_s3.valid := s3_state === s3_data_resp
       when (s3_state === s3_data_resp) {
         when (TL2CacheInput.io.cache_s3.ready) {
-          //state := s_idle
-          //s1_state := s1_idle
-          //s2_state := s2_idle
           s3_state := s3_idle
         }
       }
