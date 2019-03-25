@@ -382,7 +382,7 @@ class ICacheModule(outer: ICache) extends LazyModuleImp(outer)
                     lgSize = lgCacheBlockBytes)._2
 
   val timer = GTimer()
-  val debug_flag = false.B
+  val debug_flag = true.B
   when (debug_flag) {
     when (tl_out.a.valid) {
       printf("[L1ICache]acquire cycle: %d addr: %x valid%x ready%x\n", timer, tl_out.a.bits.address, tl_out.a.valid, tl_out.a.ready)
