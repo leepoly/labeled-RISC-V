@@ -55,6 +55,7 @@ class WithNBigCores(n: Int) extends Config((site, here, up) => {
         blockBytes = site(CacheBlockBytes))))
     List.tabulate(n)(i => big.copy(hartId = i))
   }
+case NBigCores => n
 })
 
 class WithNSmallCores(n: Int) extends Config((site, here, up) => {
@@ -124,6 +125,7 @@ class With1TinyCore extends Config((site, here, up) => {
 })
 
 class WithNBanksPerMemChannel(n: Int) extends Config((site, here, up) => {
+  case NBanksPerMemChannel => n
   case BankedL2Key => up(BankedL2Key, site).copy(nBanksPerChannel = n)
 })
 
