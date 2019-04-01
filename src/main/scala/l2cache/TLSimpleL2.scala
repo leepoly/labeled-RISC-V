@@ -37,6 +37,9 @@ class DRRIP(n_cores: Int, n_sets: Int, n_ways: Int,
     val update_way = Input(UInt(log2Ceil(n_ways).W))
     val update_cpu = Input(UInt(N_CORE_BITS.W))
     val output_way = Output(UInt(log2Ceil(n_ways).W))
+    
+    val debug_current_state = Output(UInt((n_ways * 2).W))
+    val debug_next_state = Output(UInt((n_ways * 2).W))
   }
 
   val state_table = SeqMem(n_sets, UInt((n_ways * 2).W))
@@ -47,6 +50,8 @@ class DRRIP(n_cores: Int, n_sets: Int, n_ways: Int,
 
   val next_state = Wire(UInt((n_ways * 2).W))
   val current_state = Wire(UInt((n_ways * 2).W))
+  io.debug_current_state := current_state
+  io.debug_next_state := next_state
   val compensated_state = Wire(Vec(n_ways, UInt(2.W)))
 
   val drrip_way = Wire(UInt(32.W))
@@ -782,9 +787,9 @@ with HasControlPlaneParameters
 
       cp.dsid := s1_in.dsid
       // we banned LvNA waymasking to use drrip replacement
-      // val curr_mask = cp.waymask
-      // s1_decode.repl_way_reg := Mux((curr_state_reg & curr_mask).orR, PriorityEncoder(curr_state_reg & curr_mask),
-      //   Mux(curr_mask.orR, PriorityEncoder(curr_mask), UInt(0)))
+      val curr_mask = cp.waymask
+      //s1_decode.repl_way_reg := Mux((curr_state_reg & curr_mask).orR, PriorityEncoder(curr_state_reg & curr_mask),
+         //Mux(curr_mask.orR, PriorityEncoder(curr_mask), UInt(0)))
       s1_decode.repl_way_reg := drrip.io.output_way
       val repl_dsid = set_dsids_reg(s1_decode.repl_way_reg)
       val dsid_occupacy = RegInit(Vec(Seq.fill(1 << dsidWidth){ 0.U(log2Ceil(p(NL2CacheCapacity) * 1024 / blockBytes).W) }))
@@ -810,20 +815,7 @@ with HasControlPlaneParameters
       //val need_data_read = s1_decode.read_hit_reg || s1_decode.write_hit_reg || s1_decode.read_miss_writeback_reg || s1_decode.write_miss_writeback_reg
 
       when (s1_state === s1_tag_read || s1_state === s1_wait) {
-        log("hit: %d s1_idx: %d curr_state_reg: %x hit_way: %x repl_way: %x", s1_hit, s1_idx, curr_state_reg, s1_decode.hit_way_reg, s1_decode.repl_way_reg)
-        when (s1_ren) {
-          log_part("read addr: %x tag: %x hit: %d ", s1_in.address, s1_tag, s1_hit)
-        }
-        when (s1_wen) {
-          log_part("write addr: %x tag: %x hit: %d ", s1_in.address, s1_tag, s1_hit)
-        }
-        when (s1_hit) {
-          log_plain("[hit] hit_way: %d\n", s1_decode.hit_way_reg)
-        } .elsewhen (need_writeback) {
-          log_plain("[wb] repl_way: %d wb_addr: %x\n", s1_decode.repl_way_reg, s1_decode.writeback_addr_reg)
-        } .otherwise {
-          log_plain("repl_way: %d repl_addr: %x\n", s1_decode.repl_way_reg, s1_decode.writeback_addr_reg)
-        }
+        log("hit: %d wb: %d s1_idx: %d curr_state_reg: %x hit_way: %x repl_way: %x repl_addr %x", s1_hit, need_writeback, s1_idx, curr_state_reg, s1_decode.hit_way_reg, s1_decode.repl_way_reg, s1_decode.writeback_addr_reg)
         log("s1 tags: " + Seq.fill(tag_rdata_reg.size)("%x").mkString(" "), tag_rdata_reg:_*)
         log("s1 vb: %x db: %x", vb_rdata_reg, db_rdata_reg)
 
@@ -860,26 +852,29 @@ with HasControlPlaneParameters
         metadata.dirty := false.B
         metadata.tag := 0.U
         metadata.dsid := 0.U
-        metadata.rr_state := 0xffff.U // curr_mask
+        metadata.rr_state := curr_mask
       }
 
 
       // update metadata
       val update_way = Mux(s1_hit, s1_decode.hit_way_reg, s1_decode.repl_way_reg)
       val next_state = Wire(Bits())
+      
+      drrip.io.update_valid := s1_state === s1_tag_read
+      drrip.io.update_hit := s1_hit
+      drrip.io.update_set := s1_idx
+      drrip.io.update_way := update_way
+      drrip.io.update_cpu := 0.U // TODO: current req always sets hartid to 0
       when (s1_state === s1_tag_read) {
         when (!(curr_state_reg/* & curr_mask*/).orR) {
           next_state := curr_state_reg | 0xffff.U /*curr_mask*/
         } .otherwise {
           next_state := curr_state_reg.bitSet(update_way, Bool(false))
         }
-        drrip.io.update_valid := vb_rdata_reg(update_way)
-        drrip.io.update_hit := s1_hit
-        drrip.io.update_set := s1_idx
-        drrip.io.update_way := update_way
-        drrip.io.update_cpu := 0.U // TODO: current req always sets hartid to 0
         log("[update metadata]dsid: %d set: %d hit: %d rw: %d update_way: %d curr_state: %x next_state: %x",
           s1_in.dsid, s1_idx, s1_hit, s1_ren, update_way, curr_state_reg, next_state)
+        log("[drrip update]update_way: %d curr_state: %x next_state: %x",
+          update_way, drrip.io.debug_current_state, drrip.io.debug_next_state)
       }
 
       val update_metadata = Wire(Vec(nWays, new MetadataEntry(tagBits, 16)))
