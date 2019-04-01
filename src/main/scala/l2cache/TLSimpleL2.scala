@@ -40,19 +40,33 @@ class DRRIP(n_cores: Int, n_sets: Int, n_ways: Int,
     
     val debug_current_state = Output(UInt((n_ways * 2).W))
     val debug_next_state = Output(UInt((n_ways * 2).W))
+    val debug_compensated_state = Output(UInt((n_ways * 2).W))
+    val debug_found_vec = Output(UInt((N_STATE_COUNT * n_ways).W))
+    val debug_first_vec = Output(UInt((N_STATE_COUNT * n_ways).W))
   }
 
-  val state_table = SeqMem(n_sets, UInt((n_ways * 2).W))
-  val psel_table = SeqMem(n_cores, UInt(psel_width.W))
+  val state_seq = Seq(n_sets, 0)
+  val state_init = state_seq.map((t) => {UInt(t, width = n_ways * 2)})
+  val state_table = RegInit(Vec(state_init))
+  val psel_seq = Seq(n_sets, 0)
+  val psel_init = state_seq.map((t) => {UInt(t, width = psel_width)})
+  val psel_table = RegInit(Vec(psel_init))
+  
   val psel_counter_value = Wire(UInt(psel_width.W))
   val bip_counter_next = Wire(UInt(6.W))
   val bip_counter = RegInit(0.U(6.W))
 
   val next_state = Wire(UInt((n_ways * 2).W))
   val current_state = Wire(UInt((n_ways * 2).W))
+  val compensated_state = Wire(Vec(n_ways, UInt(2.W)))
   io.debug_current_state := current_state
   io.debug_next_state := next_state
-  val compensated_state = Wire(Vec(n_ways, UInt(2.W)))
+  io.debug_compensated_state := compensated_state.reduce(Cat(_, _))
+
+  val found_vec = Wire(Vec(N_STATE_COUNT, UInt(n_ways.W)))
+  val first_vec = Wire(Vec(N_STATE_COUNT, UInt(n_ways.W)))
+  io.debug_found_vec := found_vec.reduce(Cat(_, _))
+  io.debug_first_vec := first_vec.reduce(Cat(_, _))
 
   val drrip_way = Wire(UInt(32.W))
 
@@ -62,32 +76,56 @@ class DRRIP(n_cores: Int, n_sets: Int, n_ways: Int,
 
   def access(set: UInt) = {
 
-    current_state := state_table.read(set)
+    val current_access_state = Wire(UInt((n_ways * 2).W))
 
-    val found_vec = Wire(Vec(N_STATE_COUNT, UInt(n_ways.W)))
-    val first_vec = Wire(Vec(N_STATE_COUNT, UInt(n_ways.W)))
+    val found_0 = Wire(Vec(n_ways, Bool()))
+    val found_1 = Wire(Vec(n_ways, Bool()))
+    val found_2 = Wire(Vec(n_ways, Bool()))
+    val found_3 = Wire(Vec(n_ways, Bool()))
 
-    val state_add = Wire(UInt(1.W))
-    val source_add = Wire(UInt(n_ways.W))
+    val first_0 = Wire(UInt(n_ways.W))
+    val first_1 = Wire(UInt(n_ways.W))
+    val first_2 = Wire(UInt(n_ways.W))
+    val first_3 = Wire(UInt(n_ways.W))
 
+    //val state_add = Wire(UInt(1.W))
+    //val source_add = Wire(UInt(n_ways.W))
 
-    found_vec.zipWithIndex.foreach((found_with_index) => {found_with_index._1 := (current_state(found_with_index._2*2+1, found_with_index._2*2) === found_with_index._2.U)})
-    for (i <- n_ways - 1 to 0 by -1) {
-      compensated_state(n_ways - 1 - i) := Mux(state_add.toBool(),
-                                                  (current_state(i*2+1, i*2) + Mux(state_add.toBool(), source_add, 0.U))(1, 0),
-                                                      current_state(i*2+1, i*2))
+    current_access_state := state_table(set)
+
+    //found_vec.zipWithIndex.foreach((found_with_index) => {found_with_index._1 := (current_state(found_with_index._2*2+1, found_with_index._2*2) === found_with_index._2.U)})
+    
+    
+    for (i <- n_ways - 1 to 0 by -1) { 
+        
+      found_0(i) := (~(current_access_state(i*2+1) | current_access_state(i*2))).toBool()
+      found_1(i) := ((~current_access_state(i*2+1)).asUInt() & (current_access_state(i*2))).toBool()
+      found_2(i) := (current_access_state(i*2+1) & ((~current_access_state(i*2)).asUInt())).toBool()
+      found_3(i) := (current_access_state(i*2+1) & (current_access_state(i*2))).toBool()
+      //compensated_state(n_ways - 1 - i) := Mux(state_add.toBool(),
+      //                                            (current_state(i*2+1, i*2) + source_add)(1, 0), current_state(i*2+1, i*2))
     }
 
-    state_add := ~(found_vec.last.orR())
-    source_add := PriorityEncoder(found_vec.map((c) => {c.orR()}))
-    first_vec.zipWithIndex.map((c) => {if (c._2 == 0) {c._1 := 0.U} else {c._1 := PriorityEncoder(found_vec(c._2))}})
-    drrip_way := first_vec(source_add)
+    //state_add := ~(found_vec.last.orR())
+    //source_add := PriorityEncoder(found_vec.map((c) => {c.orR()}))
+    //first_vec.zipWithIndex.map((c) => {if (c._2 == 0) {c._1 := 0.U} else {c._1 := PriorityEncoder(found_vec(c._2))}})
+    //drrip_way := first_vec(source_add)
 
-    
+    //state_add := ~(found_3.reduce(_|_))
+    //source_add := Mux(found_2.reduce(_|_), 1.U, Mux(found_1.reduce(_|_), 2.U, 3.U))
+
+    first_0 := 0.U
+    first_1 := PriorityEncoder(found_1.reverse)
+    first_2 := PriorityEncoder(found_2.reverse)
+    first_3 := PriorityEncoder(found_3.reverse)
+
+    drrip_way := Mux(found_3.reduce(_|_), first_3, Mux(found_2.reduce(_|_), first_2, Mux(found_1.reduce(_|_), first_1, first_0)))
   }
 
 
   def updata(valid: Bool, hit: Bool, set: UInt, way: UInt, cpu: UInt) = {
+
+    current_state := state_table(set)
 
     val core_bits = Wire(UInt(N_CORE_BITS.W))
     val policy_bit = Wire(UInt(1.W))
@@ -95,7 +133,15 @@ class DRRIP(n_cores: Int, n_sets: Int, n_ways: Int,
 
     val new_way_block = Wire(UInt(2.W))
     val miss_state = Wire(UInt((n_ways * 2).W))
-    val hit_state = compensated_state.reduce(Cat(_, _)) & state_mask.asUInt()
+    val hit_state = compensated_state.reduce(Cat(_, _)) & state_mask.reduce(Cat(_, _))
+
+    val update_found_0 = Wire(Vec(n_ways, Bool()))
+    val update_found_1 = Wire(Vec(n_ways, Bool()))
+    val update_found_2 = Wire(Vec(n_ways, Bool()))
+    val update_found_3 = Wire(Vec(n_ways, Bool()))
+
+    val state_add = Wire(UInt(1.W))
+    val source_add = Wire(UInt(n_ways.W))
 
     core_bits   := set(N_SET_BITS - 1, N_SET_BITS - N_CORE_BITS)
     policy_bit  := set(N_SET_BITS - N_CORE_BITS - 1)
@@ -103,7 +149,23 @@ class DRRIP(n_cores: Int, n_sets: Int, n_ways: Int,
 
     next_state := Mux(hit, hit_state, miss_state)
     bip_counter_next := bip_counter + 1.U
-    psel_counter_value := psel_table.read(cpu, valid)
+    psel_counter_value := psel_table(cpu)
+
+    // current compensated_state
+    
+    for (i <- n_ways - 1 to 0 by -1) { 
+        
+      update_found_0(i) := (~(current_state(i*2+1) | current_state(i*2))).toBool()
+      update_found_1(i) := ((~current_state(i*2+1)).asUInt() & (current_state(i*2))).toBool()
+      update_found_2(i) := (current_state(i*2+1) & ((~current_state(i*2)).asUInt())).toBool()
+      update_found_3(i) := (current_state(i*2+1) & (current_state(i*2))).toBool()
+      compensated_state(n_ways - 1 - i) := Mux(state_add.toBool(),
+                                                  (current_state(i*2+1, i*2) + source_add)(1, 0), current_state(i*2+1, i*2))
+    }
+
+    state_add := ~(update_found_3.reduce(_|_))
+    source_add := Mux(update_found_2.reduce(_|_), 1.U, Mux(update_found_1.reduce(_|_), 2.U, 3.U))
+
 
     for (i <- 0 until n_ways) {
       state_mask(i) := Mux(way === i.U, 0.U, (N_STATE_COUNT - 1).U)
@@ -112,28 +174,30 @@ class DRRIP(n_cores: Int, n_sets: Int, n_ways: Int,
     miss_state := compensated_state.reduce(Cat(_, _)) & state_mask.reduce(Cat(_, _)) | way_state_next.reduce(Cat(_, _))
 
 
-    when ((~hit).toBool()) {
+    when ((~hit).toBool() & valid) {
       // SDM
-      val not_update_psel = (~sdm_bits.orR()).toBool() & (core_bits === cpu)
-      val lead_to_bip = Mux(not_update_psel, ~policy_bit, psel_counter_value > PSEL_THRS.U).toBool()
+      val not_update_psel = (sdm_bits.orR()).toBool() & (core_bits === cpu)
+      val lead_to_bip = Mux(not_update_psel, psel_counter_value > PSEL_THRS.U, ~policy_bit).toBool()
       val psel_counter_next = Mux(not_update_psel, psel_counter_value,
                                 Mux(lead_to_bip, psel_counter_value - 1.U, psel_counter_value + 1.U))
 
       when(lead_to_bip) {
         // BIP
-        psel_table.write(cpu, psel_counter_next)
+        psel_table(cpu) := psel_counter_next
         bip_counter := bip_counter_next
         new_way_block := Mux(bip_counter === BIP_MAX.U, (PSEL_MAX - 1).U, PSEL_MAX.U)
       }.otherwise {
         // SRRIP
-        psel_table.write(cpu, psel_counter_next)
+        psel_table(cpu) := psel_counter_next
         new_way_block := (PSEL_MAX - 1).U
       }
     }.otherwise {
       new_way_block := 0.U
     }
 
-    when (valid) {state_table.write(set, next_state)}
+    when (valid) {
+        state_table(set) := next_state        
+    }
   }
 
   access(io.access_set)
@@ -763,8 +827,9 @@ with HasControlPlaneParameters
       val curr_state_reg = Reg(Bits(width = nWays))
       val set_dsids_reg = Reg(Vec(nWays, UInt(width = dsidWidth.W)))
 
+      drrip.io.access_set := s1_idx
       when (s1_state === s1_tag_read_resp) {
-        drrip.io.access_set := s1_idx
+        //drrip.io.access_set := s1_idx
 
         s1_state := s1_tag_read
         vb_rdata_reg := vb_rdata
@@ -873,8 +938,9 @@ with HasControlPlaneParameters
         }
         log("[update metadata]dsid: %d set: %d hit: %d rw: %d update_way: %d curr_state: %x next_state: %x",
           s1_in.dsid, s1_idx, s1_hit, s1_ren, update_way, curr_state_reg, next_state)
-        log("[drrip update]update_way: %d curr_state: %x next_state: %x",
-          update_way, drrip.io.debug_current_state, drrip.io.debug_next_state)
+        log("[drrip update]update_way: %d curr_state: %x next_state: %x compensated_state:%x found_vec:%x first_vec:%x",
+          update_way, drrip.io.debug_current_state, drrip.io.debug_next_state, drrip.io.debug_compensated_state, 
+          drrip.io.debug_found_vec, drrip.io.debug_first_vec)
       }
 
       val update_metadata = Wire(Vec(nWays, new MetadataEntry(tagBits, 16)))
