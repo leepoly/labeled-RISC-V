@@ -45,12 +45,9 @@ class DRRIP(n_cores: Int, n_sets: Int, n_ways: Int,
     val debug_first_vec = Output(UInt((N_STATE_COUNT * n_ways).W))
   }
 
-  val state_seq = Seq(n_sets, 0)
-  val state_init = state_seq.map((t) => {UInt(t, width = n_ways * 2)})
-  val state_table = RegInit(Vec(state_init))
-  val psel_seq = Seq(n_sets, 0)
-  val psel_init = state_seq.map((t) => {UInt(t, width = psel_width)})
-  val psel_table = RegInit(Vec(psel_init))
+
+  val state_table = RegInit(Vec(Seq.fill(n_sets)(UInt(0, width = n_ways * 2))))
+  val psel_table = RegInit(Vec(Seq.fill(n_cores)(UInt(0, width = psel_width))))
   
   val psel_counter_value = Wire(UInt(psel_width.W))
   val bip_counter_next = Wire(UInt(6.W))
@@ -125,7 +122,7 @@ class DRRIP(n_cores: Int, n_sets: Int, n_ways: Int,
 
   def updata(valid: Bool, hit: Bool, set: UInt, way: UInt, cpu: UInt) = {
 
-    current_state := state_table(set)
+    current_state := Mux(valid, state_table(set), 0.U)
 
     val core_bits = Wire(UInt(N_CORE_BITS.W))
     val policy_bit = Wire(UInt(1.W))
@@ -147,7 +144,7 @@ class DRRIP(n_cores: Int, n_sets: Int, n_ways: Int,
     policy_bit  := set(N_SET_BITS - N_CORE_BITS - 1)
     sdm_bits    := set(N_SDM_BITS - 1 , 0)
 
-    next_state := Mux(hit, hit_state, miss_state)
+    next_state := Mux(valid, Mux(hit, hit_state, miss_state), 0.U)
     bip_counter_next := bip_counter + 1.U
     psel_counter_value := psel_table(cpu)
 
