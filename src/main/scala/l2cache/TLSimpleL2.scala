@@ -350,7 +350,7 @@ class TLCacheConvertorIn(params: TLBundleParameters, dsidWidth: Int, L2param: TL
     }
   }
 
-  //if (convertor_debug) {
+  if (convertor_debug) {
     when (in_recv_fire) {
       printf("[in.a] cycle: %d a_addr %x a_opcode%x s0_state%x cache_s0.valid%x cache_s0.ready%x a_ready%x a_valid%x a_data %x, in_len %x\n", 
         GTimer(), io.tl_in_a.bits.address,
@@ -360,7 +360,7 @@ class TLCacheConvertorIn(params: TLBundleParameters, dsidWidth: Int, L2param: TL
         s0_in_len
       )
     }
-  //}
+  }
 
   // *** gather_wdata ***
   // s_gather_write_data:
@@ -706,9 +706,6 @@ with HasControlPlaneParameters
                       (!(s1_valid && !s3_ready && TL2CacheInput.io.cache_s0.req.address === cache_s3.address/* && op_wen(cache_s3.opcode) && op_ren(TL2CacheInput.io.cache_s0.req.opcode)*/))
       val s1_rawblocking = ((s1_valid && !s2_ready && TL2CacheInput.io.cache_s0.req.address === cache_s2.address/* && op_wen(cache_s2.opcode) && op_ren(TL2CacheInput.io.cache_s0.req.opcode)*/)) ||
                       ((s1_valid && !s3_ready && TL2CacheInput.io.cache_s0.req.address === cache_s3.address/* && op_wen(cache_s3.opcode) && op_ren(TL2CacheInput.io.cache_s0.req.opcode)*/))
-      when (s1_rawblocking) {
-        printf("[blocking]\n")
-      }
 
       val s3_ren = cache_s3.opcode === TLMessages.Get
 
@@ -758,6 +755,9 @@ with HasControlPlaneParameters
           out.a.bits.mask,
           out.a.bits.data,
           s1_in.in_len)
+      }
+      when (s1_rawblocking) {
+        log("[blocking]\n")
       }
 
       when (s1_valid && s1_ready) {
@@ -826,14 +826,13 @@ with HasControlPlaneParameters
 
       drrip.io.access_set := s1_idx
       when (s1_state === s1_tag_read_resp) {
-        //drrip.io.access_set := s1_idx
-
         s1_state := s1_tag_read
         vb_rdata_reg := vb_rdata
         db_rdata_reg := db_rdata
         tag_rdata_reg := tag_rdata
         curr_state_reg := curr_state
         set_dsids_reg := set_dsids
+        s1_decode.repl_way_reg := drrip.io.output_way // in case drrip_way changes
       }
 
       // check hit, miss, repl_way
@@ -852,14 +851,13 @@ with HasControlPlaneParameters
       val curr_mask = cp.waymask
       //s1_decode.repl_way_reg := Mux((curr_state_reg & curr_mask).orR, PriorityEncoder(curr_state_reg & curr_mask),
          //Mux(curr_mask.orR, PriorityEncoder(curr_mask), UInt(0)))
-      s1_decode.repl_way_reg := drrip.io.output_way
       val repl_dsid = set_dsids_reg(s1_decode.repl_way_reg)
       val dsid_occupacy = RegInit(Vec(Seq.fill(1 << dsidWidth){ 0.U(log2Ceil(p(NL2CacheCapacity) * 1024 / blockBytes).W) }))
       val requester_occupacy = dsid_occupacy(s1_in.dsid)
       val victim_occupacy = dsid_occupacy(repl_dsid)
-      when (s1_state === s1_tag_read) {
+      /*when (s1_state === s1_tag_read) {
         log("req_dsid %d occ %d repl_dsid %d occ %d way %d", s1_in.dsid, requester_occupacy, repl_dsid, victim_occupacy, s1_decode.repl_way_reg)
-      }
+      }*/
 
       cp.capacity := dsid_occupacy(cp.capacity_dsid)
 
@@ -877,13 +875,11 @@ with HasControlPlaneParameters
       //val need_data_read = s1_decode.read_hit_reg || s1_decode.write_hit_reg || s1_decode.read_miss_writeback_reg || s1_decode.write_miss_writeback_reg
 
       when (s1_state === s1_tag_read || s1_state === s1_wait) {
-        log("hit: %d wb: %d s1_idx: %d curr_state_reg: %x hit_way: %x repl_way: %x repl_addr %x", s1_hit, need_writeback, s1_idx, curr_state_reg, s1_decode.hit_way_reg, s1_decode.repl_way_reg, s1_decode.writeback_addr_reg)
-        log("s1 tags: " + Seq.fill(tag_rdata_reg.size)("%x").mkString(" "), tag_rdata_reg:_*)
-        log("s1 vb: %x db: %x", vb_rdata_reg, db_rdata_reg)
-
-        // check for cross cache line bursts
-        //assert(inner_end_beat < innerDataBeats.U, s"cross cache line bursts detected  inner_end_beat$inner_end_beat < innerDataBeats${innerDataBeats.U} addr$addr")
-
+        when (s1_state === s1_tag_read) {
+          log("hit: %d wb: %d s1_idx: %d curr_state_reg: %x hit_way: %x repl_way: %x repl_addr %x", s1_hit, need_writeback, s1_idx, curr_state_reg, s1_decode.hit_way_reg, s1_decode.repl_way_reg, s1_decode.writeback_addr_reg)
+          log("s1 tags: " + Seq.fill(tag_rdata_reg.size)("%x").mkString(" "), tag_rdata_reg:_*)
+          log("s1 vb: %x db: %x", vb_rdata_reg, db_rdata_reg)
+        }
         when ((s1_decode.read_hit_reg || s1_decode.write_hit_reg || s1_decode.read_miss_writeback_reg || s1_decode.write_miss_writeback_reg)) {
           s1_state := s1_wait
           when (s2_ready) {
@@ -894,8 +890,6 @@ with HasControlPlaneParameters
             cache_s2 := s1_in
           }
         } .elsewhen ((s1_decode.read_miss_no_writeback || s1_decode.write_miss_no_writeback)) {
-          // no need to write back, directly refill data
-          // here I want to make a dynamic pipeline control, to just skip stage2
           s1_state := s1_wait
           when (s2_ready) {
             s1_state := s1_idle
@@ -1037,19 +1031,7 @@ with HasControlPlaneParameters
       when (data_read_valid && !data_write_valid) {
         data_read_cnt := data_read_cnt + 1.U
       }
-      // when (s2_state === s2_stay) {
-      //   when (s3_ready) {
-      //     s3_state := s3_wait_ram_arready
-      //     s2_state := s2_idle
-
-      //     s3_decode := s2_decode
-      //     cache_s3 := cache_s2
-      //   }
-      // }
       when (s2_state === s2_data_read) {
-        // for (i <- 0 until split) {
-        //   s2_data_buf(((data_read_cnt - 1.U) << splitBits) + i.U) := dout(i)
-        // }
         s2_data_buf(data_read_cnt - 1.U) := dout
         when (data_read_cnt === innerDataBeats.U) {
           data_read_cnt := 0.U
