@@ -473,9 +473,9 @@ with HasControlPlaneParameters
       val tagMSB = tagLSB + tagBits - 1
       println(s"tag$tagMSB-$tagLSB index$indexMSB-$indexLSB offset$offsetMSB-$offsetLSB")
 
-      //val repl = new DRRIP(4, nSets, nWays, 10, 32)
+      //val repl = new DRRIP(nTiles, nSets, nWays, 10, 32)
       val repl = new SeqRandom(nWays)
-      println(s"replacement :" + repl.name)
+      println(s"replacement " + repl.name)
 
       val rst_cnt = RegInit(0.asUInt(log2Up(2 * nSets + 1).W))
       val rst = (rst_cnt < UInt(2 * nSets)) && !reset.toBool
@@ -747,7 +747,7 @@ with HasControlPlaneParameters
       val update_way = Mux(s1_hit, s1_decode.hit_way_reg, s1_decode.repl_way_reg)
       val next_state = Wire(Bits())
 
-      repl.update(s1_state === s1_tag_read, s1_hit, s1_idx, update_way, s1_dsid)
+      repl.update(s1_state === s1_tag_read, s1_hit, s1_idx, update_way, s1_dsid((dsidWidth - 1).U, (dsidWidth - ldomDSidWidth).U))
       when (s1_state === s1_tag_read) {
         when (!(curr_state_reg/* & curr_mask*/).orR) {
           next_state := curr_state_reg | 0xffff.U /*curr_mask*/
