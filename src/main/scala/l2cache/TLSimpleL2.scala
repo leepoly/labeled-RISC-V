@@ -528,7 +528,7 @@ with HasControlPlaneParameters
       val s1_wen = s1_in.opcode === TLMessages.PutFullData || s1_in.opcode === TLMessages.PutPartialData
       
       val s1_idx = s1_in.address(indexMSB, indexLSB)
-      val bank = s1_in.address(bankMSB, bankLSB)
+      val s1_bank = s1_in.address(bankMSB, bankLSB)
 
       TL2CacheInput.io.tl_in_a.bits := in.a.bits
       TL2CacheInput.io.tl_in_a_valid := in.a.valid
@@ -625,19 +625,16 @@ with HasControlPlaneParameters
       val curr_state = wayMap((w: Int) => meta_rdata(w).rr_state).asUInt
       val set_dsids = wayMap((w: Int) => meta_rdata(w).dsid)
 
-      when (s1_state === s1_tag_read_req) {
-        s1_state := s1_tag_read_resp
-      }
-
-      // tag, valid, dirty response
       val vb_rdata_reg = Reg(Bits(width = nWays.W))
       val db_rdata_reg = Reg(Bits(width = nWays.W))
       val tag_rdata_reg = Reg(Vec(nWays, UInt(width = tagBits.W)))
       val curr_state_reg = Reg(Bits(width = nWays))
       val set_dsids_reg = Reg(Vec(nWays, UInt(width = dsidWidth.W)))
 
-      val curr_mask = cp.waymask
-      val s1_repl_way_reg = Reg(UInt(log2Ceil(nWays).W))
+      when (s1_state === s1_tag_read_req) {
+        s1_state := s1_tag_read_resp
+      }
+
       when (s1_state === s1_tag_read_resp) {
         s1_state := s1_tag_read
         vb_rdata_reg := vb_rdata
@@ -645,12 +642,9 @@ with HasControlPlaneParameters
         tag_rdata_reg := tag_rdata
         curr_state_reg := curr_state
         set_dsids_reg := set_dsids
-        s1_repl_way_reg := Mux((curr_state_reg & curr_mask).orR, PriorityEncoder(curr_state_reg & curr_mask),
-         Mux(curr_mask.orR, PriorityEncoder(curr_mask), UInt(0)))
       }
 
       // check hit, miss, repl_way
-      s1_decode.repl_way_reg := s1_repl_way_reg
       val s1_tag = s1_in.address(tagMSB, tagLSB)
       val s1_tag_eq_way = wayMap((w: Int) => tag_rdata_reg(w) === s1_tag)
       val s1_tag_match_way = wayMap((w: Int) => s1_tag_eq_way(w) && vb_rdata_reg(w)).asUInt
@@ -662,6 +656,9 @@ with HasControlPlaneParameters
       (0 until nWays).foreach(i => when (s1_tag_match_way(i)) { s1_decode.hit_way_reg  := Bits(i) })
 
       cp.dsid := s1_in.dsid
+      val curr_mask = 0xffff.U
+      s1_decode.repl_way_reg := Mux((curr_state_reg & curr_mask).orR, PriorityEncoder(curr_state_reg & curr_mask),
+                Mux(curr_mask.orR, PriorityEncoder(curr_mask), UInt(0)))
       val repl_dsid = set_dsids_reg(s1_decode.repl_way_reg)
       val dsid_occupacy = RegInit(Vec(Seq.fill(1 << dsidWidth){ 0.U(log2Ceil(p(NL2CacheCapacity) * 1024 / blockBytes).W) }))
       val requester_occupacy = dsid_occupacy(s1_in.dsid)
@@ -676,7 +673,7 @@ with HasControlPlaneParameters
       val need_writeback = vb_rdata_reg(s1_decode.repl_way_reg) && db_rdata_reg(s1_decode.repl_way_reg)
       val writeback_tag = tag_rdata_reg(s1_decode.repl_way_reg)
       //s1_decode.writeback_addr_reg := Cat(writeback_tag, Cat(s1_idx, 0.U(blockOffsetBits.W)))
-      s1_decode.writeback_addr_reg := Cat(writeback_tag, Cat(s1_idx, Cat(bank, 0.U(blockOffsetBits.W))))
+      s1_decode.writeback_addr_reg := Cat(writeback_tag, Cat(s1_idx, Cat(s1_bank, 0.U(blockOffsetBits.W))))
 
       s1_decode.read_miss_writeback_reg := s1_read_miss && need_writeback
       s1_decode.read_miss_no_writeback := s1_read_miss && !need_writeback
@@ -694,16 +691,16 @@ with HasControlPlaneParameters
       // }
       when (s1_state === s1_tag_read || s1_state === s1_wait) {
         when (s1_state === s1_tag_read) {
-          log("hit: %d wb: %d s1_idx: %d curr_state_reg: %x hit_way: %x repl_way: %x repl_addr %x", s1_hit, need_writeback, s1_idx, curr_state_reg, s1_decode.hit_way_reg, s1_decode.repl_way_reg, s1_decode.writeback_addr_reg)
+          log("hit: %d wb: %d s1_idx: %d curr_state_reg: %x hit_way: %x repl_way: %x repl_addr %x waymask %x", s1_hit, need_writeback, s1_idx, curr_state_reg, s1_decode.hit_way_reg, s1_decode.repl_way_reg, s1_decode.writeback_addr_reg, cp.waymask)
           log("s1 tags: " + Seq.fill(tag_rdata_reg.size)("%x").mkString(" "), tag_rdata_reg:_*)
           log("s1 vb: %x db: %x", vb_rdata_reg, db_rdata_reg)
         }
         val wb_blocking3 = (!s3_ready) && (decode_way(s1_decode) === decode_way(s3_decode)) && (decode_idx(s1_in.address) === decode_idx(cache_s3.address))
-        val wb_blocking2 = (!s2_ready) && (decode_way(s2_decode) === decode_way(s2_decode)) && (decode_idx(cache_s2.address) === decode_idx(cache_s2.address))
+        val wb_blocking2 = (!s2_ready) && (decode_way(s1_decode) === decode_way(s2_decode)) && (decode_idx(s1_in.address) === decode_idx(cache_s2.address))
         val wb_blocking = wb_blocking2 || wb_blocking3
-        // when (wb_blocking) {
-        //   log("wb_blocking")
-        // }
+        when (wb_blocking) {
+          log("wb_blocking")
+        }
         when ((s1_decode.read_hit_reg || s1_decode.write_hit_reg || s1_decode.read_miss_writeback_reg || s1_decode.write_miss_writeback_reg)) {
           s1_state := s1_wait
           when (s2_ready && !wb_blocking) {
@@ -732,7 +729,7 @@ with HasControlPlaneParameters
         metadata.dirty := false.B
         metadata.tag := 0.U
         metadata.dsid := 0.U
-        metadata.rr_state := curr_mask
+        metadata.rr_state := false.B
       }
 
 
@@ -805,7 +802,7 @@ with HasControlPlaneParameters
       val data_read_way = Mux(s2_decode.read_hit_reg || s2_decode.write_hit_reg, s2_decode.hit_way_reg, s2_decode.repl_way_reg)
       // incase it overflows
       val data_read_cnt = RegInit(0.asUInt((log2Ceil(innerDataBeats) + 1).W))
-      val data_read_valid = (s2_state === s2_data_read && data_read_cnt =/= innerDataBeats.U)
+      val data_read_valid = (s2_state === s2_data_read && data_read_cnt =/= innerDataBeats.U) && !(s3_state === s3_data_write) //r/w at same time is not allowed
       val data_read_idx = s2_idx << log2Ceil(innerDataBeats) | data_read_cnt
       val dout = Wire(UInt(outerBeatSize.W))
 
@@ -814,6 +811,9 @@ with HasControlPlaneParameters
       val data_write_valid = s3_state === s3_data_write
       val data_write_idx = s3_idx << log2Ceil(innerDataBeats) | data_write_cnt
       val din = Wire(UInt(outerBeatSize.W))
+      // stage 3: writeback, refill, merge wdata, data resp
+      val s2_data_buf = Reg(Vec(outerDataBeats, UInt(outerBeatSize.W))) // store hit data from cache
+      val s3_data_buf = Reg(Vec(outerDataBeats, UInt(outerBeatSize.W))) // pass s2_data_buf to stage 3
 
       val data_array = DescribedSRAM(
           name = "L2_data_array",
@@ -827,20 +827,20 @@ with HasControlPlaneParameters
       }
       dout := data_array.read(data_read_idx, data_read_valid && !data_write_valid)(data_read_way)
       when (RegNext(data_read_valid, N)) {
-        log("read data array: idx: %d way: %d data: %x",
-          RegNext(data_read_idx), RegNext(data_read_way), dout)
+        log("read data array: idx: %d way: %d data: %x cnt: %x",
+          RegNext(data_read_idx), RegNext(data_read_way), dout, data_read_cnt)
+        s2_data_buf(data_read_cnt - 1.U) := dout
+      }
+      when (data_read_valid) {
+        data_read_cnt := data_read_cnt + 1.U
       }
 
       // s_data_read
       // read miss or need write back
-      // stage 3: writeback, refill, merge wdata, data resp
-      val s2_data_buf = Reg(Vec(outerDataBeats, UInt(outerBeatSize.W))) // store hit data from cache
-      val s3_data_buf = Reg(Vec(outerDataBeats, UInt(outerBeatSize.W))) // pass s2_data_buf to stage 3
-      when (data_read_valid && !data_write_valid) {
-        data_read_cnt := data_read_cnt + 1.U
-      }
+      // when (s2_state === s2_data_read && !data_write_valid) {
+        
+      // }
       when (s2_state === s2_data_read) {
-        s2_data_buf(data_read_cnt - 1.U) := dout
         when (data_read_cnt === innerDataBeats.U) {
           data_read_cnt := 0.U
           s2_state := s2_wait
