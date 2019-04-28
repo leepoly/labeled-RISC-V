@@ -104,7 +104,7 @@ class L2MSHR(params: TLBundleParameters, dsidWidth: Int) extends Module with L2C
   val outerBeatSize = params.dataBits
   val outerDataBeats = blockSize / outerBeatSize
   
-  val s_wait_ram_arready :: s_replay_wait_cache :: s_merge_put_data :: Nil = Enum(UInt(), 3)
+  val s_wait_ram_arready :: s_replay_wait_cache :: Nil = Enum(UInt(), 2)
   val state = Reg(init = s_wait_ram_arready)
   val mshr_debug = true
   val nL2MSHRs = 2
@@ -128,6 +128,9 @@ class L2MSHR(params: TLBundleParameters, dsidWidth: Int) extends Module with L2C
   mshr_file.io.enq.bits := mshr_file_enq.bits
   mshr_file.io.enq.valid := mshr_file_enq.valid
   mshr_file_enq.ready := mshr_file.io.enq.ready
+  when (mshr_file.io.enq.valid && mshr_file.io.enq.ready) {
+    printf("[mshr-add-entry]: cycle: %d addr %x\n", GTimer(), mshr_file_enq.bits.req.address)
+  }
 
   //val valid_mshr_entry_orR = mshr_file.io.count > 0.U
   val mshr_file_deq = Wire(DecoupledIO(new L2MSHREntry(params, dsidWidth)))
@@ -163,7 +166,7 @@ class L2MSHR(params: TLBundleParameters, dsidWidth: Int) extends Module with L2C
       when (!(mshr_file_deq.bits.req.opcode === TLMessages.Get)) {
         for (merge_idx <- 0 until outerDataBeats) {
           val idx = merge_idx.U
-          printf("[merge] put_data_buf %x / %x, data_buf %x, addr %x, currbeat%x, lastbeat%x",
+          printf("[mshr_merge] put_data_buf %x / %x, data_buf %x, addr %x, currbeat%x, lastbeat%x\n",
             mshr_file_deq.bits.req.data(idx), mshr_file_deq.bits.req.mask(idx), io.rf_data(idx), mshr_file_deq.bits.req.address, idx, mshr_file_deq.bits.req.in_len)
         }
       }
@@ -183,6 +186,13 @@ class L2MSHR(params: TLBundleParameters, dsidWidth: Int) extends Module with L2C
       replay_req.address, replay_req.data.asUInt, replay_req.opcode, replay_req.is_replay)
     when (io.replay_ready) {
       state := s_wait_ram_arready
+    }
+  }
+
+  if (mshr_debug) {
+    when (GTimer() % 10000.U === 0.U) {
+      printf("[mshr-report] cycle: %d m_state %x cnt %x e1_addr%x e2_addr%x \n", GTimer(), state, mshr_file.io.count, 
+        mshr_file.io.enq.bits.req.address, mshr_file.io.deq.bits.req.address)
     }
   }
 
@@ -423,22 +433,35 @@ class TLCacheConvertorOut(params: TLBundleParameters, dsidWidth: Int, L2param: T
   val out_rdata_fire = io.tl_out_d_valid && io.tl_out_d_ready
   val out_rdata = io.tl_out_d.bits.data
 
-  val wb_idle :: wb_wait_ram_awready :: wb_do_ram_write :: wb_wait_ram_bresp :: wb_wait_refill :: Nil = Enum(UInt(), 5)
-  //without MSHR, we now support simple serial wb+rf
+  val wb_idle :: wb_wait_ram_awready :: wb_do_ram_write :: wb_wait_ram_bresp :: Nil = Enum(UInt(), 4)
   val rf_idle :: rf_wait_ram_ar :: rf_do_ram_read :: rf_wait_cache_ready :: Nil = Enum(UInt(), 4)
   val wb_state = Reg(init = wb_idle)
   val rf_state = Reg(init = rf_idle)
+  val out_idle :: out_wb :: out_rf :: Nil = Enum(UInt(), 3)
+  val debug_out_state = Reg(init = out_idle)
   val convertor_out_debug = L2param.debug
 
   //writeback
   val wb_addr_buf = Reg(UInt(width = params.addressBits.W))
   val wb_data_buf = Reg(Vec(blockSize / params.dataBits, UInt(params.dataBits.W)))
-  when (wb_state === wb_idle && io.wb_valid) {
+
+  when (GTimer() % 10000.U === 0.U) {
+    printf("[out-report] cycle: %d, outstate %x, wb_state %x, wb_addr %x, wb_data %x rf_state %x, rf_addr%x %x\n",
+        GTimer(), debug_out_state,
+        wb_state,
+        io.wb_addr,
+        io.wb_data.asUInt,
+        rf_state, io.rf_addr_valid, io.rf_addr
+        )
+  }
+
+  when (wb_state === wb_idle && rf_state === rf_idle && io.wb_valid) {
     wb_state := wb_do_ram_write
     wb_addr_buf := io.wb_addr
     wb_data_buf := io.wb_data
+    debug_out_state := out_wb
     if (convertor_out_debug) {
-      printf("[out.a] wb cycle: %d, wb_state %x, wb_addr %x, wb_data %x \n",
+      printf("[out-wb-recv-data] cycle: %d, wb_state %x, wb_addr %x, wb_data %x \n",
         GTimer(),
         wb_state,
         io.wb_addr,
@@ -446,42 +469,40 @@ class TLCacheConvertorOut(params: TLBundleParameters, dsidWidth: Int, L2param: T
         )
     }
   }
-  // when (wb_state === wb_wait_ram_awready) {
-  //   wb_state := wb_do_ram_write //there is one useless extra cycle...
-  // }
+
   val (wb_cnt, wb_done) = Counter(out_wdata_fire && wb_state === wb_do_ram_write, outerDataBeats)
   when (wb_state === wb_do_ram_write && wb_done) {
     wb_state := wb_wait_ram_bresp
   }
   when (wb_state === wb_wait_ram_bresp && out_wreq_fire) {
-    wb_state := wb_wait_refill
+    wb_state := wb_idle
+    debug_out_state := out_idle
+    printf("[out-wb-finish] cycle: %d, outstate%x \n", GTimer(), debug_out_state)
   }
-  val out_write_valid = wb_state === wb_do_ram_write
+  val out_write_valid = wb_state === wb_do_ram_write && rf_state === rf_idle
+  io.wb_ready := wb_state === wb_idle && rf_state === rf_idle
 
   //refill
-  val no_wb_req = wb_state === wb_idle || wb_state === wb_wait_refill
-  when (rf_state === rf_idle && io.rf_addr_valid && no_wb_req) {
+  when (rf_state === rf_idle && wb_state === wb_idle && io.rf_addr_valid && !io.wb_valid) { //let writeback prior to refill
     rf_state := rf_wait_ram_ar
+    debug_out_state := out_rf
+    printf("[out-rf-start] cycle: %d \n", GTimer())
   }
-  io.rf_data_valid := rf_state === rf_wait_cache_ready && no_wb_req
-  io.wb_ready := wb_state === wb_idle
+  io.rf_data_valid := rf_state === rf_wait_cache_ready
   val rf_mem_data = Reg(Vec(blockSize / params.dataBits, UInt(params.dataBits.W)))
-  when (rf_state === rf_wait_ram_ar && no_wb_req && out_raddr_fire) {
+  when (rf_state === rf_wait_ram_ar && out_raddr_fire) {
     rf_state := rf_do_ram_read
   }
-  val (rf_mem_cnt, rf_mem_done) = Counter(rf_state === rf_do_ram_read && no_wb_req && out_rdata_fire, outerDataBeats)
-  when (rf_state === rf_do_ram_read && no_wb_req && out_rdata_fire) {
+  val (rf_mem_cnt, rf_mem_done) = Counter(rf_state === rf_do_ram_read && out_rdata_fire, outerDataBeats)
+  when (rf_state === rf_do_ram_read && out_rdata_fire) {
     rf_mem_data(rf_mem_cnt) := out_rdata
     when (rf_mem_done) {
       rf_state := rf_wait_cache_ready
     }
   }
-  when (rf_state === rf_wait_cache_ready && no_wb_req && io.rf_ready) {
+  io.rf_data := rf_mem_data
+  when (rf_state === rf_wait_cache_ready && io.rf_ready) {
     rf_state := rf_idle
-    io.rf_data := rf_mem_data
-    when (wb_state === wb_wait_refill) {
-      wb_state := wb_idle
-    }
   }
 
   if (convertor_out_debug) {
@@ -495,15 +516,10 @@ class TLCacheConvertorOut(params: TLBundleParameters, dsidWidth: Int, L2param: T
         io.tl_out_d.bits.data
       )
     }
-    // when (wb_state =/= wb_idle) {
-    //   printf("cycle%d [out wb] wb_state%x no_wb_req%x\n",
-    //     GTimer(), wb_state, no_wb_req
-    //   )
-    // }
   }
 
   //outer wire
-  val out_read_valid = (rf_state === rf_wait_ram_ar) && no_wb_req
+  val out_read_valid = (rf_state === rf_wait_ram_ar) && (wb_state === wb_idle)
   val out_data = wb_data_buf(wb_cnt)
   val out_addr = Mux(out_read_valid, io.rf_addr, wb_addr_buf)
   val out_opcode = Mux(out_read_valid, TLMessages.Get, TLMessages.PutFullData)
@@ -665,18 +681,18 @@ with HasControlPlaneParameters
       //   log("[timestamp]")
       // }
 
-      // when (out.a.fire()) {
-      //   log("out.a.opcode %x, dsid %x, param %x, size %x, source %x, address %x, mask %x, data %x s1_len%x",
-      //     out.a.bits.opcode,
-      //     out.a.bits.dsid,
-      //     out.a.bits.param,
-      //     out.a.bits.size,
-      //     out.a.bits.source,
-      //     out.a.bits.address,
-      //     out.a.bits.mask,
-      //     out.a.bits.data,
-      //     s1_in.in_len)
-      // }
+      when (out.a.fire()) {
+        log("out.a.opcode %x, dsid %x, param %x, size %x, source %x, address %x, mask %x, data %x s1_len%x",
+          out.a.bits.opcode,
+          out.a.bits.dsid,
+          out.a.bits.param,
+          out.a.bits.size,
+          out.a.bits.source,
+          out.a.bits.address,
+          out.a.bits.mask,
+          out.a.bits.data,
+          s1_in.in_len)
+      }
 
       mshr.io.replay_ready := !rst && s1_state === s1_idle
       when (mshr.io.replay_ready && mshr.io.replay_valid) {
@@ -962,9 +978,9 @@ with HasControlPlaneParameters
 
       // s_data_read
       // read miss or need write back
-      // when (s2_state === s2_data_read && !data_write_valid) {
-        
-      // }
+      when (GTimer() % 10000.U === 0.U) {
+        log("s2_read_cnt: %x", data_read_cnt)
+      }
       when (s2_state === s2_data_read) {
         when (data_read_cnt === innerDataBeats.U) {
           data_read_cnt := 0.U
