@@ -559,12 +559,8 @@ with HasControlPlaneParameters
     val nWays = p(NL2CacheWays)
     println(s"nWays = $nWays")
     val nBanks = p(NBanksPerMemChannel)
-    var nSets = 0
     val no_bank = nBanks == 0 || nBanks == 1
-    if (no_bank)
-      nSets = p(NL2CacheCapacity) * 1024 / 64 / nWays
-    else
-      nSets = p(NL2CacheCapacity) * 1024 / 64 / nWays / nBanks
+    var nSets = if (no_bank) (p(NL2CacheCapacity) * 1024 / 64 / nWays) else (p(NL2CacheCapacity) * 1024 / 64 / nWays / nBanks)
     println(s"nSets = $nSets")
     val cp = IO(new CPToL2CacheIO().flip())
     (node.in zip node.out) foreach { case ((in, edgeIn), (out, edgeOut)) =>
@@ -603,21 +599,12 @@ with HasControlPlaneParameters
       val indexBits = log2Ceil(nSets)
       val blockOffsetBits = log2Ceil(blockBytes)
       val bankBits = log2Ceil(nBanks)
-      var tagBits = 0
-      if (no_bank) 
-        tagBits = addrWidth - indexBits - blockOffsetBits
-      else
-        tagBits = addrWidth - indexBits - blockOffsetBits - bankBits
+      val tagBits = if (no_bank) (addrWidth - indexBits - blockOffsetBits) else (addrWidth - indexBits - blockOffsetBits - bankBits)
       val offsetLSB = 0
       val offsetMSB = blockOffsetBits - 1
-      val bankLSB = if (no_bank) 0 else offsetMSB + 1
-      val bankMSB = if (no_bank) 0 else bankLSB + bankBits - 1
-      var indexLSB = 0
-      if (no_bank) 
-        indexLSB = offsetMSB + 1 
-      else
-        indexLSB = bankMSB + 1
-      //val indexLSB = bankMSB + 1 // offsetMSB + 1 
+      val bankLSB = if (no_bank) 0 else (offsetMSB + 1)
+      val bankMSB = if (no_bank) 0 else (bankLSB + bankBits - 1)
+      val indexLSB = if (no_bank) offsetMSB + 1 else bankMSB + 1
       val indexMSB = indexLSB + indexBits - 1
       val tagLSB = indexMSB + 1
       val tagMSB = tagLSB + tagBits - 1
@@ -651,7 +638,7 @@ with HasControlPlaneParameters
 
       val mshr = Module(new L2MSHR(edgeIn.bundle, dsidWidth))
       val TL2CacheInput = Module(new TLCacheConvertorIn(edgeIn.bundle, dsidWidth, param))
-      val s1_in = Reg(new L2CacheReq(edgeIn.bundle, dsidWidth))
+      val cache_s1 = Reg(new L2CacheReq(edgeIn.bundle, dsidWidth))
       val s1_decode = Wire(new L2CacheDecodeInfo(nWays, addrWidth))
       val cache_s2 = Reg(new L2CacheReq(edgeIn.bundle, dsidWidth))
       val s2_decode = Reg(new L2CacheDecodeInfo(nWays, addrWidth))
@@ -662,20 +649,14 @@ with HasControlPlaneParameters
       val s3_ready = s3_state === s3_idle
       val s1_ready = !rst && s1_state === s_idle
                       //  && 
-                      // (!mshr.io.replay_valid)
                       // (!(s0_valid && !s2_ready && TL2CacheInput.io.cache_s0.req.address === cache_s2.address/* && op_wen(cache_s2.opcode) && op_ren(TL2CacheInput.io.cache_s0.req.opcode)*/)) &&
                       // (!(s0_valid && !s3_ready && TL2CacheInput.io.cache_s0.req.address === cache_s3.address/* && op_wen(cache_s3.opcode) && op_ren(TL2CacheInput.io.cache_s0.req.opcode)*/))
-      // val s1_rawblocking = ((s0_valid && !s2_ready && TL2CacheInput.io.cache_s0.req.address === cache_s2.address/* && op_wen(cache_s2.opcode) && op_ren(TL2CacheInput.io.cache_s0.req.opcode)*/)) ||
-      //                 ((s0_valid && !s3_ready && TL2CacheInput.io.cache_s0.req.address === cache_s3.address/* && op_wen(cache_s3.opcode) && op_ren(TL2CacheInput.io.cache_s0.req.opcode)*/))
 
       val s3_ren = cache_s3.opcode === TLMessages.Get
-
-      val s1_ren = s1_in.opcode === TLMessages.Get
-      val s1_wen = s1_in.opcode === TLMessages.PutFullData || s1_in.opcode === TLMessages.PutPartialData
-      
-      val s1_idx = s1_in.address(indexMSB, indexLSB)
-
-      val s1_bank = s1_in.address(bankMSB, bankLSB)
+      val s1_ren = cache_s1.opcode === TLMessages.Get
+      val s1_wen = cache_s1.opcode === TLMessages.PutFullData || cache_s1.opcode === TLMessages.PutPartialData
+      val s1_idx = cache_s1.address(indexMSB, indexLSB)
+      val s1_bank = cache_s1.address(bankMSB, bankLSB)
 
       TL2CacheInput.io.tl_in_a.bits := in.a.bits
       TL2CacheInput.io.tl_in_a_valid := in.a.valid
@@ -694,7 +675,7 @@ with HasControlPlaneParameters
       // 1) + 2) is blocking s0_req: set_blocking, mshr_blocking
       // 3) is blocking adding entry from s3 req
       val s0_set = decode_idx(TL2CacheInput.io.cache_s0.req.address)
-      val s1_set = decode_idx(s1_in.address)
+      val s1_set = decode_idx(cache_s1.address)
       val s2_set = decode_idx(cache_s2.address)
       val s3_set = decode_idx(cache_s3.address)
       val set_blocking1 = (!s1_ready) && (s1_set === s0_set)
@@ -722,9 +703,9 @@ with HasControlPlaneParameters
         }
       }
       /** Single log */
-      def log(fmt: String, args: Bits*) = log_raw(log_prefix, fmt, "\n", timer +: bankid.U +: s1_state +: s2_state +: s3_state +: s1_in.address +: cache_s2.address +: cache_s3.address +: args:_*)
+      def log(fmt: String, args: Bits*) = log_raw(log_prefix, fmt, "\n", timer +: bankid.U +: s1_state +: s2_state +: s3_state +: cache_s1.address +: cache_s2.address +: cache_s3.address +: args:_*)
       /** Log with line continued */
-      def log_part(fmt: String, args: Bits*) = log_raw(log_prefix, fmt, "", timer +: bankid.U +: s1_state +: s2_state +: s3_state +: s1_in.address +: cache_s2.address +: cache_s3.address +: args:_*)
+      def log_part(fmt: String, args: Bits*) = log_raw(log_prefix, fmt, "", timer +: bankid.U +: s1_state +: s2_state +: s3_state +: cache_s1.address +: cache_s2.address +: cache_s3.address +: args:_*)
       /** Log with nothing added */
       def log_plain(fmt: String, args: Bits*) = log_raw("", fmt, "", args:_*)
 
@@ -738,13 +719,13 @@ with HasControlPlaneParameters
       //     out.a.bits.address,
       //     out.a.bits.mask,
       //     out.a.bits.data,
-      //     s1_in.in_len)
+      //     cache_s1.in_len)
       // }
 
       mshr.io.replay_ready := !rst && s1_state === s1_idle
       
       when (mshr.io.replay_ready && mshr.io.replay_valid) {
-        s1_in := mshr.io.replay_req
+        cache_s1 := mshr.io.replay_req
         s1_state := s1_tag_read_req
       }
       .elsewhen (s0_valid && s1_ready) {
@@ -755,42 +736,26 @@ with HasControlPlaneParameters
           log("mshr_blocking")
         }
         when (!set_blocking && !mshr_blocking) {
-          s1_in := TL2CacheInput.io.cache_s0.req
+          cache_s1 := TL2CacheInput.io.cache_s0.req
           s1_state := s1_tag_read_req
         }
       }
 
-      when ((s1_ready && s0_valid)) {
-        val wire_opcode = TL2CacheInput.io.cache_s0.req.opcode
+      when ((s1_ready && s0_valid) || (mshr.io.replay_ready && mshr.io.replay_valid)) {
+        val display_req = Mux(s1_ready && s0_valid, TL2CacheInput.io.cache_s0.req, mshr.io.replay_req)
+        val wire_opcode = display_req.opcode
         val wire_ren = wire_opcode === TLMessages.Get
         val wire_wen = wire_opcode === TLMessages.PutFullData || wire_opcode === TLMessages.PutPartialData
         log("[s0] opcode %x, dsid %x, address %x, mask %x, data %x, ren%x/wen%x s0_valid%x s1_ready%x replay%x",
-          TL2CacheInput.io.cache_s0.req.opcode,
-          TL2CacheInput.io.cache_s0.req.dsid,
-          TL2CacheInput.io.cache_s0.req.address,
-          TL2CacheInput.io.cache_s0.req.mask.asUInt,
-          TL2CacheInput.io.cache_s0.req.data.asUInt,
+          display_req.opcode,
+          display_req.dsid,
+          display_req.address,
+          display_req.mask.asUInt,
+          display_req.data.asUInt,
           wire_ren, wire_wen,
           s0_valid,
           s1_ready,
-          TL2CacheInput.io.cache_s0.req.is_replay
-          )
-      }
-
-      when (mshr.io.replay_ready && mshr.io.replay_valid) {
-        val wire_opcode = mshr.io.replay_req.opcode
-        val wire_ren = wire_opcode === TLMessages.Get
-        val wire_wen = wire_opcode === TLMessages.PutFullData || wire_opcode === TLMessages.PutPartialData
-        log("[s0] opcode %x, dsid %x, address %x, mask %x, data %x, ren%x/wen%x s0_valid%x s1_ready%x replay%x",
-          mshr.io.replay_req.opcode,
-          mshr.io.replay_req.dsid,
-          mshr.io.replay_req.address,
-          mshr.io.replay_req.mask.asUInt,
-          mshr.io.replay_req.data.asUInt,
-          wire_ren, wire_wen,
-          s0_valid,
-          s1_ready,
-          mshr.io.replay_req.is_replay
+          display_req.is_replay
           )
       }
 
@@ -807,7 +772,6 @@ with HasControlPlaneParameters
         data = Vec(nWays, new MetadataEntry(tagBits, dsidWidth))
       )
 
-      //replacing policy
       val meta_array_wen = rst || s1_state === s1_tag_read
       val read_tag_req = (s1_state === s1_tag_read_req)
       val meta_rdata = meta_array.read(s1_idx, read_tag_req && !meta_array_wen)
@@ -840,23 +804,23 @@ with HasControlPlaneParameters
       }
 
       // check hit, miss, repl_way
-      val s1_tag = s1_in.address(tagMSB, tagLSB)
+      val s1_tag = cache_s1.address(tagMSB, tagLSB)
       val s1_tag_eq_way = wayMap((w: Int) => tag_rdata_reg(w) === s1_tag)
       val s1_tag_match_way = wayMap((w: Int) => s1_tag_eq_way(w) && vb_rdata_reg(w)).asUInt
       val s1_hit = s1_tag_match_way.orR
       s1_decode.read_hit := s1_hit && s1_ren
       s1_decode.write_hit := s1_hit && s1_wen
-      s1_decode.read_miss := !s1_hit && s1_ren && !s1_in.is_replay
-      s1_decode.write_miss := !s1_hit && s1_wen && !s1_in.is_replay
+      s1_decode.read_miss := !s1_hit && s1_ren && !cache_s1.is_replay
+      s1_decode.write_miss := !s1_hit && s1_wen && !cache_s1.is_replay
       (0 until nWays).foreach(i => when (s1_tag_match_way(i)) { s1_decode.hit_way  := Bits(i) })
 
-      cp.dsid := s1_in.dsid
+      cp.dsid := cache_s1.dsid
       val curr_mask = 0xffff.U
       s1_decode.repl_way := Mux((curr_state_reg & curr_mask).orR, PriorityEncoder(curr_state_reg & curr_mask),
                 Mux(curr_mask.orR, PriorityEncoder(curr_mask), UInt(0)))
       val repl_dsid = set_dsids_reg(s1_decode.repl_way)
       val dsid_occupacy = RegInit(Vec(Seq.fill(1 << dsidWidth){ 0.U(log2Ceil(p(NL2CacheCapacity) * 1024 / blockBytes).W) }))
-      val requester_occupacy = dsid_occupacy(s1_in.dsid)
+      val requester_occupacy = dsid_occupacy(cache_s1.dsid)
       val victim_occupacy = dsid_occupacy(repl_dsid)
       
       cp.capacity := dsid_occupacy(cp.capacity_dsid)
@@ -869,8 +833,8 @@ with HasControlPlaneParameters
       else
         s1_decode.writeback_addr := Cat(writeback_tag, Cat(s1_idx, Cat(s1_bank, 0.U(blockOffsetBits.W))))
 
-      val s1_replay_read = s1_ren && s1_in.is_replay
-      val s1_replay_write = s1_wen && s1_in.is_replay
+      val s1_replay_read = s1_ren && cache_s1.is_replay
+      val s1_replay_write = s1_wen && cache_s1.is_replay
       s1_decode.read_replay_writeback := s1_replay_read && need_writeback
       s1_decode.read_replay_no_writeback := s1_replay_read && !need_writeback
       s1_decode.write_replay_writeback := s1_replay_write && need_writeback
@@ -884,8 +848,9 @@ with HasControlPlaneParameters
           log("s1 tags: " + Seq.fill(tag_rdata_reg.size)("%x").mkString(" "), tag_rdata_reg:_*)
           log("s1 vb: %x db: %x", vb_rdata_reg, db_rdata_reg)
         }
-        val raw_blocking3 = (!s3_ready) && (decode_way(s1_decode) === decode_way(s3_decode)) && (decode_idx(s1_in.address) === decode_idx(cache_s3.address))
-        val raw_blocking2 = (!s2_ready) && (decode_way(s1_decode) === decode_way(s2_decode)) && (decode_idx(s1_in.address) === decode_idx(cache_s2.address))
+        //raw_blocking seems obsolete code but we haven't test starting linux w/o it
+        val raw_blocking3 = (!s3_ready) && (decode_way(s1_decode) === decode_way(s3_decode)) && (decode_idx(cache_s1.address) === decode_idx(cache_s3.address))
+        val raw_blocking2 = (!s2_ready) && (decode_way(s1_decode) === decode_way(s2_decode)) && (decode_idx(cache_s1.address) === decode_idx(cache_s2.address))
         val raw_blocking = raw_blocking2 || raw_blocking3
         when (raw_blocking) {
           log("raw_blocking")
@@ -897,7 +862,7 @@ with HasControlPlaneParameters
             s2_state := s2_data_read
 
             s2_decode := s1_decode
-            cache_s2 := s1_in
+            cache_s2 := cache_s1
           }
         } .elsewhen ((s1_decode.read_replay_no_writeback || s1_decode.write_replay_no_writeback || s1_decode.read_miss || s1_decode.write_miss)) {
           s1_state := s1_wait
@@ -906,7 +871,7 @@ with HasControlPlaneParameters
             s2_state := s2_wait
 
             s2_decode := s1_decode
-            cache_s2 := s1_in
+            cache_s2 := cache_s1
           }
         } 
       }
@@ -926,7 +891,7 @@ with HasControlPlaneParameters
       val next_state = Wire(Bits())
       
       when (s1_state === s1_tag_read) {
-        when (!s1_hit && !s1_in.is_replay) { //modify tag only when req hit or replay
+        when (!s1_hit && !cache_s1.is_replay) { //modify tag&curr_state only when req hit or replay
           next_state := curr_state_reg
         } .otherwise {
           when (!(curr_state_reg & curr_mask).orR) {
@@ -936,21 +901,21 @@ with HasControlPlaneParameters
           }
         }
         log("[update metadata]dsid: %d set: %d hit: %d rw: %d update_way: %d curr_state: %x next_state: %x",
-          s1_in.dsid, s1_idx, s1_hit, s1_ren, update_way, curr_state_reg, next_state)
+          cache_s1.dsid, s1_idx, s1_hit, s1_ren, update_way, curr_state_reg, next_state)
       }
 
       val update_metadata = Wire(Vec(nWays, new MetadataEntry(tagBits, 16)))
       for (i <- 0 until nWays) {
         val metadata = update_metadata(i)
         val is_update_way = update_way === i.U
-        when (is_update_way && (s1_hit || s1_in.is_replay)) {
+        when (is_update_way && (s1_hit || cache_s1.is_replay)) {
           metadata.valid := true.B
           //read_hit -> db_rdata_reg(update_way); write_hit -> 1; replay_read(w/ or w/o wb) -> 0; replay_write -> 1
           metadata.dirty := Mux(s1_decode.read_hit, db_rdata_reg(update_way),
             Mux(s1_replay_read, false.B, true.B))
           metadata.tag := s1_tag
-          metadata.dsid := s1_in.dsid
-        } .otherwise { //all miss req his its second chance to set metadata(replay), so we don't do it rightnow for atomicity
+          metadata.dsid := cache_s1.dsid
+        } .otherwise { //all miss req has its second chance to set metadata(replay), so we don't do it rightnow for atomicity
           metadata.valid := vb_rdata_reg(i)
           metadata.dirty := db_rdata_reg(i)
           metadata.tag := tag_rdata_reg(i)
@@ -968,16 +933,12 @@ with HasControlPlaneParameters
           assert(update_way === s1_decode.repl_way, "update must = repl way when decrease a dsid's occupacy")
           val victim_valid = vb_rdata_reg(s1_decode.repl_way)
           dsid_occupacy.zipWithIndex foreach { case (dsid_occ, i) =>
-              when (i.U === s1_in.dsid && (!victim_valid || i.U =/= repl_dsid)) {
+              when (i.U === cache_s1.dsid && (!victim_valid || i.U =/= repl_dsid)) {
                 dsid_occ := requester_occupacy + 1.U
-              }.elsewhen(i.U =/= s1_in.dsid && i.U === repl_dsid && victim_valid) {
+              }.elsewhen(i.U =/= cache_s1.dsid && i.U === repl_dsid && victim_valid) {
                 dsid_occ := victim_occupacy - 1.U
               }
           }
-          // when (victim_valid) {
-          //   log("victim dsid %d dec way %d old_value %d", repl_dsid, s1_decode.repl_way, victim_occupacy)
-          // }
-          // log("dsid %d inc way %d old_value %d", s1_in.dsid, update_way, requester_occupacy)
         }
       }
 
@@ -1024,9 +985,6 @@ with HasControlPlaneParameters
 
       // s_data_read
       // read miss or need write back
-      when (GTimer() % 10000.U === 0.U) {
-        log("s2_read_cnt: %x", data_read_cnt)
-      }
       when (s2_state === s2_data_read) {
         when (data_read_cnt === innerDataBeats.U) {
           data_read_cnt := 0.U
@@ -1119,7 +1077,7 @@ with HasControlPlaneParameters
       // #                  write back path                      #
       // #########################################################
       val TL2CacheOutput = Module(new TLCacheConvertorOut(edgeOut.bundle, dsidWidth, param))
-      TL2CacheOutput.io.dsid := s1_in.dsid
+      TL2CacheOutput.io.dsid := cache_s1.dsid
       out.a.bits := TL2CacheOutput.io.tl_out_a.bits
       out.a.valid := TL2CacheOutput.io.tl_out_a_valid
       TL2CacheOutput.io.tl_out_a_ready := out.a.ready
@@ -1134,7 +1092,7 @@ with HasControlPlaneParameters
         when (cache_s3.is_replay) {
           s3_state := s3_replay_write
         } .otherwise {
-          s3_state := s3_wait_ram_arready // also wb_valid -> false
+          s3_state := s3_wait_ram_arready 
         }
       }
 
@@ -1144,7 +1102,7 @@ with HasControlPlaneParameters
       mshr.io.add_entry := cache_s3
       mshr.io.add_entry_valid := s3_state === s3_wait_ram_arready
       when (mshr.io.add_entry_ready && mshr.io.add_entry_valid) {
-        //log("added to mshr file, cache processing finish")
+        //added to mshr file, pipelining processing finished
         s3_state := s3_idle
       }
 
