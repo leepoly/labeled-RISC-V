@@ -849,15 +849,15 @@ with HasControlPlaneParameters
           log("s1 vb: %x db: %x", vb_rdata_reg, db_rdata_reg)
         }
         //raw_blocking seems obsolete code but we haven't test starting linux w/o it
-        val raw_blocking3 = (!s3_ready) && (decode_way(s1_decode) === decode_way(s3_decode)) && (decode_idx(cache_s1.address) === decode_idx(cache_s3.address))
-        val raw_blocking2 = (!s2_ready) && (decode_way(s1_decode) === decode_way(s2_decode)) && (decode_idx(cache_s1.address) === decode_idx(cache_s2.address))
-        val raw_blocking = raw_blocking2 || raw_blocking3
-        when (raw_blocking) {
-          log("raw_blocking")
-        }
+        // val raw_blocking3 = (!s3_ready) && (decode_way(s1_decode) === decode_way(s3_decode)) && (decode_idx(cache_s1.address) === decode_idx(cache_s3.address))
+        // val raw_blocking2 = (!s2_ready) && (decode_way(s1_decode) === decode_way(s2_decode)) && (decode_idx(cache_s1.address) === decode_idx(cache_s2.address))
+        // val raw_blocking = raw_blocking2 || raw_blocking3
+        // when (raw_blocking) {
+        //   log("raw_blocking")
+        // }
         when ((s1_decode.read_hit || s1_decode.write_hit || s1_decode.read_replay_writeback || s1_decode.write_replay_writeback)) {
           s1_state := s1_wait
-          when (s2_ready && !raw_blocking) {
+          when (s2_ready/* && !raw_blocking*/) {
             s1_state := s1_idle
             s2_state := s2_data_read
 
@@ -866,7 +866,7 @@ with HasControlPlaneParameters
           }
         } .elsewhen ((s1_decode.read_replay_no_writeback || s1_decode.write_replay_no_writeback || s1_decode.read_miss || s1_decode.write_miss)) {
           s1_state := s1_wait
-          when (s2_ready && !raw_blocking) {
+          when (s2_ready/* && !raw_blocking*/) {
             s1_state := s1_idle
             s2_state := s2_wait
 
