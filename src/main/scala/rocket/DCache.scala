@@ -45,7 +45,7 @@ class DCacheDataArray(implicit p: Parameters) extends L1HellaCacheModule()(p) {
   val data_arrays = Seq.tabulate(rowBytes / wordBytes) {
     i =>
       DescribedSRAM(
-        name = s"L1_Dcache_data_arrays_${i}",
+        name = s"data_arrays_${i}",
         desc = "DCache Data Array",
         size = nSets * cacheBlockBytes / rowBytes,
         data = Vec(nWays * (wordBits / eccBits), UInt(width = encBits))
@@ -98,7 +98,7 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
   val metaArb = Module(new Arbiter(new DCacheMetadataReq, 8))
 
   val tag_array = DescribedSRAM(
-    name = "L1_DCache_tag_array",
+    name = "tag_array",
     desc = "DCache Tag Array",
     size = nSets,
     data = Vec(nWays, metaArb.io.out.bits.data)
@@ -141,6 +141,7 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
     s1_req.addr := Cat(metaArb.io.out.bits.addr >> blockOffBits, io.cpu.req.bits.addr(blockOffBits-1,0))
     when (!metaArb.io.in(7).ready) { s1_req.phys := true }
   }
+
   val s1_read = isRead(s1_req.cmd)
   val s1_write = isWrite(s1_req.cmd)
   val s1_readwrite = s1_read || s1_write
@@ -202,6 +203,7 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
   val mappedAddr = (tlb.io.resp.paddr & memMask) | memBase
   val s1_paddr = Mux(isMMIO, tlb.io.resp.paddr, mappedAddr)
   val s1_victim_way = Wire(init = replacer.way)
+
   val (s1_hit_way, s1_hit_state, s1_meta, s1_victim_meta) =
     if (usingDataScratchpad) {
       val baseAddr = p(LookupByHartId)(_.dcache.flatMap(_.scratch.map(_.U)), io.hartid)
@@ -456,6 +458,15 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
   tl_out_a.valid := !io.cpu.s2_kill && ((s2_valid_cached_miss && (Bool(cacheParams.acquireBeforeRelease) || !s2_victim_dirty)) || s2_valid_uncached_pending)
   tl_out_a.bits := Mux(!s2_uncached, acquire(s2_vaddr, s2_req.addr, s2_grow_param), Mux(!s2_write, get, Mux(!s2_read, put, atomics)))
 
+
+  val timer = GTimer()
+  val debug_flag = true.B
+  when (debug_flag) {
+    when (tl_out_a.valid) {
+      printf("[L1DCache]acquire cycle: %d addr: %x isread: %d iswrite: %d\n", timer, tl_out_a.bits.address, s2_read, s2_write)
+    }
+  }
+
   // Set pending bits for outstanding TileLink transaction
   val a_sel = UIntToOH(a_source, maxUncachedInFlight+mmioOffset) >> mmioOffset
   when (tl_out_a.fire()) {
@@ -496,7 +507,15 @@ class DCacheModule(outer: DCache) extends HellaCacheModule(outer) {
   when (blockProbeAfterGrantCount > 0) { blockProbeAfterGrantCount := blockProbeAfterGrantCount - 1 }
   val canAcceptCachedGrant = if (cacheParams.acquireBeforeRelease) !release_state.isOneOf(s_voluntary_writeback, s_voluntary_write_meta) else true.B
   tl_out.d.ready := Mux(grantIsCached, (!d_first || tl_out.e.ready) && canAcceptCachedGrant, true.B)
+
+  when (debug_flag) {
+    when (tl_out.d.valid) {
+      printf("[L1DCache]grant cycle: %d data: %x valid%x ready%x\n", timer, tl_out.d.bits.data, tl_out.d.valid, tl_out.d.ready)
+    }
+  }
+
   when (tl_out.d.fire()) {
+
     when (grantIsCached) {
       grantInProgress := true
       assert(cached_grant_wait, "A GrantData was unexpected by the dcache.")
